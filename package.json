@@ -1,4 +1,12 @@
 {
+  "name": "my-backend-app",
+  "version": "1.0.0",
+  "description": "Backend website for my project",
+  "main": "app.js",
+  "scripts": {
+    "start": "node app.js" 
+  },
+  
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
