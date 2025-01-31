@@ -4,9 +4,8 @@
   "description": "Backend website for my project",
   "main": "app.js",
   "scripts": {
-    "start": "node app.js" 
+    "start": "node app.js"
   },
-  
   "dependencies": {
     "cors": "^2.8.5",
     "dotenv": "^16.4.7",
