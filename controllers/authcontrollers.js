@@ -53,7 +53,7 @@ exports.verifyOTP = (req, res) => {
 
 // Signup API
 exports.signup = async (req, res) => {
-  const { email, password, otp, token } = req.body;
+  const { name, email, password, token } = req.body;
 
   if (!email || !validator.isEmail(email)) {
     return res.status(400).json({ message: 'Invalid email format' });
@@ -63,8 +63,8 @@ exports.signup = async (req, res) => {
     return res.status(400).json({ message: 'Password should be at least 6 characters long' });
   }
 
-  if (!token || !otp) {
-    return res.status(400).json({ message: 'Token and OTP are required' });
+  if (!token) {
+    return res.status(400).json({ message: 'Token is required' });
   }
 
   try {
@@ -84,6 +84,7 @@ exports.signup = async (req, res) => {
     const hashedPassword = await bcrypt.hash(password, 10);
 
     const newUser = new User({
+      name,
       email,
       password: hashedPassword,
       isVerified : true,
