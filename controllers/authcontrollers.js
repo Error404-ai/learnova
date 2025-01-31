@@ -4,22 +4,16 @@ const validator = require('validator');
 const bcrypt = require('bcrypt');
 const User = require('../models/User');  // Ensure User model is imported
 
-// Send OTP API
+//sendotp api
 exports.sendOTP = async (req, res) => {
   const { email } = req.body;
 
-  // Validate email
   if (!email || !validator.isEmail(email)) {
     return res.status(400).json({ message: 'Invalid email format' });
   }
-
-  // Generate OTP
   const otp = Math.floor(100000 + Math.random() * 900000);
-
-  // Sign OTP with JWT
   const token = jwt.sign({ email, otp }, process.env.JWT_SECRET, { expiresIn: '30m' });
 
-  // Send OTP via email
   try {
     await sendEmail(email, `Your OTP: ${otp}`, 'OTP Verification');
     res.status(200).json({ token, message: 'OTP sent successfully' });
@@ -29,7 +23,7 @@ exports.sendOTP = async (req, res) => {
   }
 };
 
-// Verify OTP API
+//verifyotp api
 exports.verifyOTP = (req, res) => {
   const { token, otp } = req.body;
 
@@ -38,21 +32,18 @@ exports.verifyOTP = (req, res) => {
   }
 
   try {
-    // Decode the token
+
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
 
-    // Log for debugging
     console.log("Received OTP:", otp);
     console.log("Decoded OTP:", decoded.otp);
 
-    // Check if OTP matches
     if (String(decoded.otp) === String(otp)) {
       res.status(200).json({ message: 'OTP verified successfully' });
     } else {
       res.status(400).json({ message: 'Invalid OTP' });
     }
   } catch (error) {
-    // Handle expiry error specifically
     if (error.name === 'TokenExpiredError') {
       return res.status(401).json({ message: 'Token has expired, please request a new OTP' });
     }
@@ -64,28 +55,23 @@ exports.verifyOTP = (req, res) => {
 exports.signup = async (req, res) => {
   const { email, password, otp, token } = req.body;
 
-  // Check if email is valid
   if (!email || !validator.isEmail(email)) {
     return res.status(400).json({ message: 'Invalid email format' });
   }
 
-  // Check password length
   if (!password || password.length < 6) {
     return res.status(400).json({ message: 'Password should be at least 6 characters long' });
   }
 
-  // Verify if token and OTP are provided
   if (!token || !otp) {
     return res.status(400).json({ message: 'Token and OTP are required' });
   }
 
   try {
-    // Decode the token to get OTP
     const decoded = jwt.verify(token, process.env.JWT_SECRET);
     console.log("Received OTP:", otp);
     console.log("Decoded OTP:", decoded.otp);
 
-    // Compare OTPs
     if (String(decoded.otp) !== String(otp)) {
       return res.status(400).json({ message: 'Invalid OTP' });
     }
