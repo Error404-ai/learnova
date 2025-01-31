@@ -100,6 +100,7 @@ exports.signup = async (req, res) => {
     const newUser = new User({
       email,
       password: hashedPassword,
+      isVerified : true,
     });
 
     await newUser.save();
