@@ -1,5 +1,4 @@
 const express = require('express');
-const bodyParser = require('body-parser');
 const cors = require('cors');
 const dotenv = require('dotenv');
 const authRoutes = require('./routes/auth');
@@ -9,6 +8,7 @@ dotenv.config();
 
 const app = express();
 
+const bodyParser = require('body-parser');
 app.use(bodyParser.json());
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB connected successfully'))
