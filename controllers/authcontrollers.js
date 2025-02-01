@@ -67,31 +67,45 @@ exports.verifyOTP = async (req, res) => {
       { new: true }
     );
 
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    console.log('Email from OTP verification:', user.email);
+
+    const verificationToken = jwt.sign(
+      { email: user.email }, 
+      process.env.JWT_SECRET, 
+      { expiresIn: '1h' } // You can adjust expiration if needed
+    );
 
     await OTP.deleteOne({ email });
 
-    res.status(200).json({ message: 'OTP verified successfully', token });
+    res.status(200).json({ message: 'OTP verified successfully', token: verificationToken });
   } catch (error) {
     res.status(500).json({ message: 'Error verifying OTP', error: error.message });
   }
 };
 
+// "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2NzlkYmIzMmFlM2FjZWY1NjRlNWNlODQiLCJpYXQiOjE3MzgzOTAzNzcsImV4cCI6MTczODM5Mzk3N30.LC-ia4wTddnFVk0eidUlW5k8zu2JV4QBebvPy8CWmOM"
 //login api
 exports.login = async (req, res) => {
-  const { email, password } = req.body;
+  const { email, password, token: verifToken } = req.body;
 
-  if (!email || !password || !token) {
+  if (!email || !password || !verifToken) {
     return res.status(400).json({ message: 'Email, password and verification token are required' });
   }
 
   try {
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const decoded = jwt.verify(verifToken, process.env.JWT_SECRET);
 
-    if (!decoded.email || decoded.email.toLowerCase() !== email.toLowerCase()) {
+    const tokenEmail = decoded.email ? decoded.email.trim().toLowerCase() : '';
+    const requestEmail = email.trim().toLowerCase();
+
+    console.log('Email from token:', tokenEmail);
+    console.log('Email from request:', requestEmail);
+
+    if (!tokenEmail || tokenEmail !== requestEmail) {
       return res.status(400).json({ message: 'Verification token does not match email' });
     }
-    const user = await User.findOne({ email: email.toLowerCase() });
+
+    const user = await User.findOne({ email: requestEmail });
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
@@ -104,13 +118,13 @@ exports.login = async (req, res) => {
     if (!isMatch) {
       return res.status(400).json({ message: 'Invalid credentials' });
     }
-
-    const token = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    res.status(200).json({ message: 'Login successful', token });
+    const sessionToken = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
+    res.status(200).json({ message: 'Login successful', token: sessionToken });
   } catch (error) {
     res.status(500).json({ message: 'Server error', error: error.message });
   }
 };
+
 
 //forgot password api
 exports.forgotPassword = async (req, res) => {
