@@ -13,7 +13,13 @@ app.use(bodyParser.json());
 mongoose.connect(process.env.MONGO_URI)
     .then(() => console.log('MongoDB connected successfully'))
     .catch(err => console.error('MongoDB connection error:', err));
-app.use(cors());
+
+    app.use(cors({
+        origin: '*', 
+        methods: ['GET', 'POST', 'PUT', 'DELETE'], 
+        allowedHeaders: ['Content-Type', 'Authorization'], 
+        credentials: true, 
+      }));
 
 app.use('/api/auth', authRoutes);
 
