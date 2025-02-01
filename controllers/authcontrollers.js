@@ -81,11 +81,16 @@ exports.verifyOTP = async (req, res) => {
 exports.login = async (req, res) => {
   const { email, password } = req.body;
 
-  if (!email || !password) {
-    return res.status(400).json({ message: 'Email and password are required' });
+  if (!email || !password || !token) {
+    return res.status(400).json({ message: 'Email, password and verification token are required' });
   }
 
   try {
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+
+    if (!decoded.email || decoded.email.toLowerCase() !== email.toLowerCase()) {
+      return res.status(400).json({ message: 'Verification token does not match email' });
+    }
     const user = await User.findOne({ email: email.toLowerCase() });
     if (!user) {
       return res.status(400).json({ message: 'Invalid credentials' });
@@ -133,5 +138,29 @@ exports.forgotPassword = async (req, res) => {
     res.status(200).json({ message: 'OTP sent to your email. Please verify to reset password.' });
   } catch (error) {
     res.status(500).json({ message: 'Failed to send OTP', error: error.message });
+  }
+};
+
+//reset Password api
+exports.resetPassword = async (req, res) => {
+  const { email, otp, newPassword } = req.body;
+
+  if (!email || !otp || !newPassword) {
+    return res.status(400).json({ message: 'Email, OTP, and new password are required' });
+  }
+
+  try {
+    const otpRecord = await OTP.findOne({ email });
+    if (!otpRecord || otpRecord.otp !== otp) {
+      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    }
+    const hashedPassword = await bcrypt.hash(newPassword, 10);
+    await User.findOneAndUpdate({ email }, { password: hashedPassword });
+
+    await OTP.deleteOne({ email });
+
+    res.status(200).json({ message: 'Password updated successfully' });
+  } catch (error) {
+    res.status(500).json({ message: 'Error resetting password', error: error.message });
   }
 };
