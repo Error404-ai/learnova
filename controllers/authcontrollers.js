@@ -19,8 +19,13 @@ exports.signup = async (req, res) => {
 
   try {
     const existingUser = await User.findOne({ email: email.toLowerCase() });
+
     if (existingUser) {
-      return res.status(400).json({ message: 'User already exists' });
+      if (existingUser.isVerified) {
+        return res.status(400).json({ message: 'User already exists and is verified. Please login.' });
+      } else {
+        return res.status(200).json({ message: 'User already exists. Please verify your email with the OTP sent.' });
+      }
     }
 
     const hashedPassword = await bcrypt.hash(password, 10);
@@ -28,17 +33,18 @@ exports.signup = async (req, res) => {
       name,
       email,
       password: hashedPassword,
-      isVerified: false
+      isVerified: false 
     });
 
     await newUser.save();
+
     const otp = Math.floor(100000 + Math.random() * 900000).toString();
     await OTP.findOneAndUpdate(
       { email },
       { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) },
       { upsert: true }
     );
-    //sendotp
+
     await sendEmail(email, `Your OTP: ${otp}`, 'Email Verification');
 
     res.status(200).json({ message: 'User created. Please verify your email with the OTP sent.' });
@@ -46,6 +52,7 @@ exports.signup = async (req, res) => {
     res.status(500).json({ message: 'Failed to create user', error: error.message });
   }
 };
+
 
 //verify otp
 exports.verifyOTP = async (req, res) => {
