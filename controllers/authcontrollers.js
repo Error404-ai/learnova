@@ -5,183 +5,137 @@ const bcrypt = require('bcrypt');
 const OTP = require('../models/otp');
 const User = require('../models/User'); 
 
+// Generate Access & Refresh Tokens
+const generateTokens = (userId, email) => {
+    const accessToken = jwt.sign(
+        { userId, email },
+        process.env.JWT_SECRET,
+        { expiresIn: '15m' }
+    );
+
+    const refreshToken = jwt.sign(
+        { userId },
+        process.env.REFRESH_TOKEN_SECRET,
+        { expiresIn: '7d' }
+    );
+    
+    return { accessToken, refreshToken };
+};
+
+// Store Refresh Token
+const storeRefreshToken = async (userId, refreshToken) => {
+    await User.findByIdAndUpdate(userId, { refreshToken });
+};
+
 // Signup API
 exports.signup = async (req, res) => {
-  const { name, email, password } = req.body;
+    const { name, email, password } = req.body;
 
-  if (!name || !email || !password) {
-    return res.status(400).json({ message: 'Name, email, and password are required' });
-  }
-
-  if (!validator.isEmail(email)) {
-    return res.status(400).json({ message: 'Invalid email format' });
-  }
-
-  try {
-    const existingUser = await User.findOne({ email: email.toLowerCase() });
-
-    if (existingUser) {
-      if (existingUser.isVerified) {
-        return res.status(400).json({ message: 'User already exists and is verified. Please login.' });
-      } else {
-        return res.status(200).json({ message: 'User already exists. Please verify your email with the OTP sent.' });
-      }
+    if (!name || !email || !password) {
+        return res.status(400).json({ message: 'Name, email, and password are required' });
     }
 
-    const hashedPassword = await bcrypt.hash(password, 10);
-    const newUser = new User({
-      name,
-      email,
-      password: hashedPassword,
-      isVerified: false 
-    });
+    if (!validator.isEmail(email)) {
+        return res.status(400).json({ message: 'Invalid email format' });
+    }
 
-    await newUser.save();
+    try {
+        const existingUser = await User.findOne({ email: email.toLowerCase() });
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await OTP.findOneAndUpdate(
-      { email },
-      { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) },
-      { upsert: true }
-    );
+        if (existingUser) {
+            return res.status(400).json({ message: 'User already exists. Please login or verify OTP.' });
+        }
 
-    await sendEmail(email, `Your OTP: ${otp}`, 'Email Verification');
+        const hashedPassword = await bcrypt.hash(password, 10);
+        const newUser = new User({ name, email, password: hashedPassword, isVerified: false });
+        await newUser.save();
 
-    res.status(200).json({ message: 'User created. Please verify your email with the OTP sent.' });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to create user', error: error.message });
-  }
+        const otp = Math.floor(100000 + Math.random() * 900000).toString();
+        await OTP.findOneAndUpdate({ email }, { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) }, { upsert: true });
+
+        await sendEmail(email, `Your OTP: ${otp}`, 'Email Verification');
+        res.status(200).json({ message: 'User created. Please verify your email with OTP.' });
+    } catch (error) {
+        res.status(500).json({ message: 'Failed to create user', error: error.message });
+    }
 };
 
-
-//verify otp
+// Verify OTP API (Modified to not require email in req.body)
 exports.verifyOTP = async (req, res) => {
-  const { email, otp } = req.body;
+    const { token, otp } = req.body;
 
-  if (!email || !otp) {
-    return res.status(400).json({ message: 'Email and OTP are required' });
-  }
-
-  try {
-    const otpRecord = await OTP.findOne({ email });
-    if (!otpRecord || otpRecord.otp !== otp) {
-      return res.status(400).json({ message: 'Invalid or expired OTP' });
+    if (!token || !otp) {
+        return res.status(400).json({ message: 'Token and OTP are required' });
     }
 
-    const user = await User.findOneAndUpdate(
-      { email },
-      { isVerified: true },
-      { new: true }
-    );
+    try {
+        const decoded = jwt.verify(token, process.env.JWT_SECRET);
+        const email = decoded.email;
 
-    console.log('Email from OTP verification:', user.email);
+        const otpRecord = await OTP.findOne({ email });
+        if (!otpRecord || otpRecord.otp !== otp) {
+            return res.status(400).json({ message: 'Invalid or expired OTP' });
+        }
 
-    const verificationToken = jwt.sign(
-      { email: user.email }, 
-      process.env.JWT_SECRET, 
-      { expiresIn: '1h' } // You can adjust expiration if needed
-    );
+        const user = await User.findOneAndUpdate({ email }, { isVerified: true }, { new: true });
+        const { accessToken, refreshToken } = generateTokens(user._id, user.email);
+        await storeRefreshToken(user._id, refreshToken);
 
-    await OTP.deleteOne({ email });
-
-    res.status(200).json({ message: 'OTP verified successfully', token: verificationToken });
-  } catch (error) {
-    res.status(500).json({ message: 'Error verifying OTP', error: error.message });
-  }
+        await OTP.deleteOne({ email });
+        res.status(200).json({ message: 'OTP verified successfully', accessToken, refreshToken });
+    } catch (error) {
+        res.status(500).json({ message: 'Error verifying OTP', error: error.message });
+    }
 };
 
-// "token": "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ1c2VySWQiOiI2NzlkYmIzMmFlM2FjZWY1NjRlNWNlODQiLCJpYXQiOjE3MzgzOTAzNzcsImV4cCI6MTczODM5Mzk3N30.LC-ia4wTddnFVk0eidUlW5k8zu2JV4QBebvPy8CWmOM"
-//login api
+// Login API
 exports.login = async (req, res) => {
-  const { email, password, token: verifToken } = req.body;
+    const { email, password } = req.body;
 
-  if (!email || !password || !verifToken) {
-    return res.status(400).json({ message: 'Email, password and verification token are required' });
-  }
-
-  try {
-    const decoded = jwt.verify(verifToken, process.env.JWT_SECRET);
-
-    const tokenEmail = decoded.email ? decoded.email.trim().toLowerCase() : '';
-    const requestEmail = email.trim().toLowerCase();
-
-    console.log('Email from token:', tokenEmail);
-    console.log('Email from request:', requestEmail);
-
-    if (!tokenEmail || tokenEmail !== requestEmail) {
-      return res.status(400).json({ message: 'Verification token does not match email' });
+    if (!email || !password) {
+        return res.status(400).json({ message: 'Email and password are required' });
     }
 
-    const user = await User.findOne({ email: requestEmail });
-    if (!user) {
-      return res.status(400).json({ message: 'Invalid credentials' });
-    }
+    try {
+        const user = await User.findOne({ email });
+        if (!user || !(await bcrypt.compare(password, user.password))) {
+            return res.status(400).json({ message: 'Invalid credentials' });
+        }
 
-    if (!user.isVerified) {
-      return res.status(401).json({ message: 'Email not verified. Please verify your email first.' });
-    }
+        if (!user.isVerified) {
+            return res.status(401).json({ message: 'Email not verified. Please verify first.' });
+        }
 
-    const isMatch = await bcrypt.compare(password, user.password);
-    if (!isMatch) {
-      return res.status(400).json({ message: 'Invalid credentials' });
+        const { accessToken, refreshToken } = generateTokens(user._id, user.email);
+        await storeRefreshToken(user._id, refreshToken);
+
+        res.status(200).json({ message: 'Login successful', accessToken, refreshToken });
+    } catch (error) {
+        res.status(500).json({ message: 'Server error', error: error.message });
     }
-    const sessionToken = jwt.sign({ userId: user._id }, process.env.JWT_SECRET, { expiresIn: '1h' });
-    res.status(200).json({ message: 'Login successful', token: sessionToken });
-  } catch (error) {
-    res.status(500).json({ message: 'Server error', error: error.message });
-  }
 };
 
+// Refresh Token API
+exports.refreshToken = async (req, res) => {
+    const { refreshToken } = req.body;
 
-//forgot password api
-exports.forgotPassword = async (req, res) => {
-  const { email } = req.body;
-
-  if (!email || !validator.isEmail(email)) {
-    return res.status(400).json({ message: 'Invalid email format' });
-  }
-
-  try {
-    const user = await User.findOne({ email });
-    if (!user) {
-      return res.status(400).json({ message: 'User not found' });
+    if (!refreshToken) {
+        return res.status(400).json({ message: 'Refresh token is required' });
     }
 
-    const otp = Math.floor(100000 + Math.random() * 900000).toString();
-    await OTP.findOneAndUpdate(
-      { email },
-      { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) },
-      { upsert: true }
-    );
+    try {
+        const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
+        const user = await User.findById(decoded.userId);
 
-    await sendEmail(email, `Your OTP for password reset: ${otp}`, 'Password Reset OTP');
+        if (!user || user.refreshToken !== refreshToken) {
+            return res.status(403).json({ message: 'Invalid refresh token' });
+        }
 
-    res.status(200).json({ message: 'OTP sent to your email. Please verify to reset password.' });
-  } catch (error) {
-    res.status(500).json({ message: 'Failed to send OTP', error: error.message });
-  }
-};
+        const { accessToken, refreshToken: newRefreshToken } = generateTokens(user._id, user.email);
+        await storeRefreshToken(user._id, newRefreshToken);
 
-//reset Password api
-exports.resetPassword = async (req, res) => {
-  const { email, otp, newPassword } = req.body;
-
-  if (!email || !otp || !newPassword) {
-    return res.status(400).json({ message: 'Email, OTP, and new password are required' });
-  }
-
-  try {
-    const otpRecord = await OTP.findOne({ email });
-    if (!otpRecord || otpRecord.otp !== otp) {
-      return res.status(400).json({ message: 'Invalid or expired OTP' });
+        res.status(200).json({ accessToken, refreshToken: newRefreshToken });
+    } catch (error) {
+        res.status(403).json({ message: 'Invalid refresh token', error: error.message });
     }
-    const hashedPassword = await bcrypt.hash(newPassword, 10);
-    await User.findOneAndUpdate({ email }, { password: hashedPassword });
-
-    await OTP.deleteOne({ email });
-
-    res.status(200).json({ message: 'Password updated successfully' });
-  } catch (error) {
-    res.status(500).json({ message: 'Error resetting password', error: error.message });
-  }
 };
