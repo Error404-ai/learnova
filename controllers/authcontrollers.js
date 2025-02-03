@@ -86,31 +86,31 @@ exports.resendOTP = async (req, res) => {
 
 // Verify OTP API 
 exports.verifyOTP = async (req, res) => {
-    const { otp, email } = req.body;
+    const { otp } = req.body;
 
-    if (!otp || !email) {
-        return res.status(400).json({ message: 'OTP and email are required' });
+    if (!otp) {
+        return res.status(400).json({ message: 'OTP is required' });
     }
 
     try {
-        const otpRecord = await OTP.findOne({ email });
+        const otpRecord = await OTP.findOne({ otp });
 
-        if (!otpRecord || otpRecord.otp !== otp) {
+        if (!otpRecord) {
             return res.status(400).json({ message: 'Invalid or expired OTP' });
         }
 
-        const user = await User.findOneAndUpdate({ email }, { isVerified: true }, { new: true });
+        const user = await User.findOneAndUpdate({ email: otpRecord.email }, { isVerified: true }, { new: true });
 
-        // Generate tokens only after OTP verification
         const { accessToken, refreshToken } = generateTokens(user._id, user.email);
         await storeRefreshToken(user._id, refreshToken);
 
-        await OTP.deleteOne({ email });  
+        await OTP.deleteOne({ otp });  
         res.status(200).json({ message: 'OTP verified successfully', accessToken, refreshToken });
     } catch (error) {
         res.status(500).json({ message: 'Error verifying OTP', error: error.message });
     }
 };
+
 
 // Forgot Password API 
 exports.forgotPassword = async (req, res) => {
