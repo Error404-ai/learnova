@@ -136,18 +136,21 @@ exports.forgotPassword = async (req, res) => {
     }
 };
 
-//Reset Password API
+//Reset Password Api
 exports.resetPassword = async (req, res) => {
-    const { newPassword } = req.body;
-
-    if (!newPassword) {
-        return res.status(400).json({ message: 'New password is required' });
-    }
-
     try {
+        const { newPassword } = req.body;
+        if (!newPassword) {
+            return res.status(400).json({ message: 'New password is required' });
+        }
+
         const userId = req.user.id;  
         const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await User.findByIdAndUpdate(userId, { password: hashedPassword });
+        
+        await User.findByIdAndUpdate(userId, { 
+            password: hashedPassword,
+            passwordChangedAt: new Date()  // Optional but recommended
+        });
 
         res.status(200).json({ message: 'Password reset successfully' });
     } catch (error) {
