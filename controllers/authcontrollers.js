@@ -136,30 +136,25 @@ exports.forgotPassword = async (req, res) => {
     }
 };
 
-// Reset Password API 
+//Reset Password API
 exports.resetPassword = async (req, res) => {
-    const { otp, email, newPassword } = req.body;
+    const { newPassword } = req.body;
 
-    if (!otp || !email || !newPassword) {
-        return res.status(400).json({ message: 'OTP, email, and new password are required' });
+    if (!newPassword) {
+        return res.status(400).json({ message: 'New password is required' });
     }
 
     try {
-        const otpRecord = await OTP.findOne({ email });
-
-        if (!otpRecord || otpRecord.otp !== otp) {
-            return res.status(400).json({ message: 'Invalid or expired OTP' });
-        }
-
+        const userId = req.user.id;  
         const hashedPassword = await bcrypt.hash(newPassword, 10);
-        await User.findOneAndUpdate({ email }, { password: hashedPassword });
+        await User.findByIdAndUpdate(userId, { password: hashedPassword });
 
-        await OTP.deleteOne({ email });  
         res.status(200).json({ message: 'Password reset successfully' });
     } catch (error) {
         res.status(500).json({ message: 'Error resetting password', error: error.message });
     }
 };
+
 
 // Login API 
 exports.login = async (req, res) => {
