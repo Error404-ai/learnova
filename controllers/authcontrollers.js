@@ -136,23 +136,62 @@ exports.forgotPassword = async (req, res) => {
     }
 };
 
+//otp verification
+exports.verifyOtp = async (req, res) => {
+    const { otp } = req.body;
+
+    if (!otp) {
+        return res.status(400).json({ message: 'OTP is required' });
+    }
+    try {
+        const otpRecord = await OTP.findOne({ otp });
+        if (!otpRecord) {
+            return res.status(400).json({ message: 'Invalid or expired OTP' });
+        }
+        const resetToken = jwt.sign({ email: otpRecord.email }, process.env.RESET_PASSWORD_SECRET, { expiresIn: '10m' });
+
+        await OTP.deleteOne({ otp });
+
+        res.status(200).json({ message: 'OTP verified successfully', resetToken });
+
+    } catch (error) {
+        res.status(500).json({ message: 'Error verifying OTP', error: error.message });
+    }
+};
+
 //Reset Password Api
 exports.resetPassword = async (req, res) => {
     try {
         const { newPassword } = req.body;
+        const resetToken = req.headers['authorization']?.split(' ')[1];
+
         if (!newPassword) {
             return res.status(400).json({ message: 'New password is required' });
         }
 
-        const userId = req.user.id;  
+        if (!resetToken) {
+            return res.status(401).json({ message: 'Reset token is missing' });
+        }
+
+        let decoded;
+        try {
+            decoded = jwt.verify(resetToken, process.env.RESET_PASSWORD_SECRET);
+        } catch (error) {
+            return res.status(401).json({ message: 'Invalid or expired reset token' });
+        }
+
+        const user = await User.findOne({ email: decoded.email });
+
+        if (!user) {
+            return res.status(404).json({ message: 'User not found' });
+        }
+
         const hashedPassword = await bcrypt.hash(newPassword, 10);
-        
-        await User.findByIdAndUpdate(userId, { 
-            password: hashedPassword,
-            passwordChangedAt: new Date()  // Optional but recommended
-        });
+
+        await User.findOneAndUpdate({ email: decoded.email }, { password: hashedPassword });
 
         res.status(200).json({ message: 'Password reset successfully' });
+
     } catch (error) {
         res.status(500).json({ message: 'Error resetting password', error: error.message });
     }
