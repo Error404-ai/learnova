@@ -3,8 +3,10 @@ const cors = require('cors');
 const dotenv = require('dotenv');
 const authRoutes = require('./routes/auth');
 const mongoose = require('mongoose');
+const passport = require("passport");
 
 dotenv.config();
+require("./config/passport");
 
 const app = express();
 
@@ -20,6 +22,9 @@ mongoose.connect(process.env.MONGO_URI)
         allowedHeaders: ['Content-Type', 'Authorization'], 
         credentials: true, 
       }));
+      
+      app.use(passport.initialize());
+
 
 app.use('/api/auth', authRoutes);
 

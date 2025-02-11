@@ -249,3 +249,24 @@ exports.refreshToken = async (req, res) => {
         res.status(403).json({ message: 'Invalid refresh token', error: error.message });
     }
 };
+
+const passport = require("passport");
+
+// Google Login Route
+exports.googleAuth = passport.authenticate("google", { scope: ["profile", "email"] });
+
+// Google Callback Route
+exports.googleAuthCallback = (req, res, next) => {
+    passport.authenticate("google", { failureRedirect: "/login" })(req, res, () => {
+        res.redirect("/dashboard");
+    });
+};
+
+// Logout Route
+exports.logout = (req, res) => {
+    req.logout((err) => {
+        if (err) return res.status(500).json({ message: "Logout failed" });
+        res.redirect("/");
+    });
+};
+
