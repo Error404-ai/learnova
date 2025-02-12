@@ -257,7 +257,7 @@ exports.googleAuth = passport.authenticate("google", { scope: ["profile", "email
 
 // Google Callback Route
 exports.googleAuthCallback = (req, res, next) => {
-    passport.authenticate("google", { failureRedirect: "/login" })(req, res, () => {
+    passport.authenticate("google", { failureRedirect: "/signup" })(req, res, () => {
         res.redirect("/dashboard");
     });
 };
