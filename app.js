@@ -4,13 +4,18 @@ const dotenv = require('dotenv');
 const mongoose = require('mongoose');
 const passport = require("passport");
 const session = require('express-session');
+const helmet = require("helmet");
+const bodyParser = require('body-parser');
 
 dotenv.config(); 
 
-const authRoutes = require('./routes/auth');
-require("./config/passport"); 
-
 const app = express();
+
+app.use(
+  helmet({
+    crossOriginOpenerPolicy: { policy: "same-origin" },
+  })
+);
 
 app.use(session({
   resave: false,
@@ -18,17 +23,17 @@ app.use(session({
   secret: process.env.SESSION_SECRET
 }));
 
+require("./config/passport"); 
 app.use(passport.initialize());
 app.use(passport.session());
 
 app.use(cors({
-  origin: '*', 
+  origin: process.env.FRONTEND_URL || '*',
   methods: ['GET', 'POST', 'PUT', 'DELETE'], 
   allowedHeaders: ['Content-Type', 'Authorization'], 
-  credentials: true
+  credentials: true 
 }));
 
-const bodyParser = require('body-parser');
 app.use(bodyParser.json());
 
 (async () => {
@@ -43,4 +48,5 @@ app.use(bodyParser.json());
   }
 })();
 
+const authRoutes = require('./routes/auth');
 app.use('/api/auth', authRoutes);
