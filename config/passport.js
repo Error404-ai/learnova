@@ -11,7 +11,7 @@ passport.use(
     {
       clientID: process.env.GOOGLE_CLIENT_ID,
       clientSecret: process.env.GOOGLE_CLIENT_SECRET,
-      callbackURL: "https://project2-zphf.onrender.com/auth/google/callback",
+      callbackURL: "https://project2-zphf.onrender.com/api/auth/google/callback",
       passReqToCallback: true
     },
     function(request, accessToken, refreshToken, profile, done){
