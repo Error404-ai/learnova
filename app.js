@@ -13,7 +13,7 @@ const app = express();
 
 app.use(
   helmet({
-    crossOriginOpenerPolicy: { policy: "same-origin" },
+    crossOriginOpenerPolicy: { policy: "same-origin-allow-popups" },
   })
 );
 
