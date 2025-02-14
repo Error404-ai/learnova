@@ -8,19 +8,20 @@ const User = require('../models/User');
 // Generate Access & Refresh Tokens
 const generateTokens = (userId, email) => {
     const accessToken = jwt.sign(
-        { userId, email },
+        { id: userId.toString(), email }, 
         process.env.JWT_SECRET,
-        { expiresIn: '15m' }
+        { expiresIn: "1h" }
     );
 
     const refreshToken = jwt.sign(
-        { userId },
-        process.env.REFRESH_TOKEN_SECRET,
-        { expiresIn: '7d' }
+        { id: userId.toString() },  
+        process.env.JWT_SECRET,
+        { expiresIn: "7d" }
     );
-    
+
     return { accessToken, refreshToken };
 };
+module.exports = generateTokens;
 
 // Store Refresh Token
 const storeRefreshToken = async (userId, refreshToken) => {
