@@ -1,8 +1,9 @@
 const express = require("express");
 const { updateProfiles } = require("../controllers/usercontrollers");
+const { protect } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
-router.post("/update-profiles", updateProfiles);
+router.post("/update-profiles", protect, updateProfiles); 
 
 module.exports = router;
