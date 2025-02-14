@@ -6,6 +6,8 @@ const passport = require("passport");
 const session = require('express-session');
 const helmet = require("helmet");
 const bodyParser = require('body-parser');
+const userRoutes = require("./routes/userroutes");
+
 
 dotenv.config(); 
 
@@ -50,3 +52,5 @@ app.use(bodyParser.json());
 
 const authRoutes = require('./routes/auth');
 app.use('/api/auth', authRoutes);
+app.use("/user", userRoutes);
+
