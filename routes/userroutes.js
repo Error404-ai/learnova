@@ -4,6 +4,6 @@ const { protect } = require("../middlewares/authMiddleware");
 
 const router = express.Router();
 
-router.post("/update-profiles", protect, updateProfiles); 
+router.put("/update-profiles", protect, updateProfiles);
 
 module.exports = router;

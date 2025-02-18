@@ -21,7 +21,6 @@ const generateTokens = (userId, email) => {
 
     return { accessToken, refreshToken };
 };
-module.exports = generateTokens;
 
 // Store Refresh Token
 const storeRefreshToken = async (userId, refreshToken) => {
