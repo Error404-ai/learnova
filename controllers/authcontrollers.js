@@ -4,6 +4,7 @@ const validator = require('validator');
 const bcrypt = require('bcrypt');
 const OTP = require('../models/otp');
 const User = require('../models/User'); 
+const passport = require("passport");
 
 // Generate Access & Refresh Tokens
 const generateTokens = (userId, email) => {
@@ -15,7 +16,7 @@ const generateTokens = (userId, email) => {
 
     const refreshToken = jwt.sign(
         { id: userId.toString() },  
-        process.env.JWT_SECRET,
+        process.env.JWT_SECRET, 
         { expiresIn: "7d" }
     );
 
@@ -47,11 +48,11 @@ exports.signup = async (req, res) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser = new User({ name, email, password: hashedPassword, isVerified: false });
+        const newUser = new User({ name, email: email.toLowerCase(), password: hashedPassword, isVerified: false });
         await newUser.save();
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        await OTP.findOneAndUpdate({ email }, { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) }, { upsert: true });
+        await OTP.findOneAndUpdate({ email: email.toLowerCase() }, { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) }, { upsert: true });
 
         await sendEmail(email, `Your OTP: ${otp}`, 'Email Verification');
         res.status(200).json({ message: 'User created. Please verify your email with OTP.' });
@@ -69,13 +70,13 @@ exports.resendOTP = async (req, res) => {
     }
 
     try {
-        const existingUser = await User.findOne({ email });
+        const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (!existingUser) {
             return res.status(400).json({ message: 'User not found' });
         }
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        await OTP.findOneAndUpdate({ email }, { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) }, { upsert: true });
+        await OTP.findOneAndUpdate({ email: email.toLowerCase() }, { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) }, { upsert: true });
 
         await sendEmail(email, `Your OTP: ${otp}`, 'Email Verification');
         res.status(200).json({ message: 'OTP resent successfully' });
@@ -95,7 +96,7 @@ exports.verifyOTP = async (req, res) => {
     try {
         const otpRecord = await OTP.findOne({ otp });
 
-        if (!otpRecord) {
+        if (!otpRecord || otpRecord.expiresAt < new Date()) {
             return res.status(400).json({ message: 'Invalid or expired OTP' });
         }
 
@@ -111,7 +112,6 @@ exports.verifyOTP = async (req, res) => {
     }
 };
 
-
 // Forgot Password API 
 exports.forgotPassword = async (req, res) => {
     const { email } = req.body;
@@ -121,13 +121,13 @@ exports.forgotPassword = async (req, res) => {
     }
 
     try {
-        const existingUser = await User.findOne({ email });
+        const existingUser = await User.findOne({ email: email.toLowerCase() });
         if (!existingUser) {
             return res.status(400).json({ message: 'User not found' });
         }
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
-        await OTP.findOneAndUpdate({ email }, { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) }, { upsert: true });
+        await OTP.findOneAndUpdate({ email: email.toLowerCase() }, { otp, expiresAt: new Date(Date.now() + 30 * 60 * 1000) }, { upsert: true });
 
         await sendEmail(email, `Your OTP for password reset: ${otp}`, 'Password Reset OTP');
         res.status(200).json({ message: 'Password reset OTP sent successfully' });
@@ -136,7 +136,7 @@ exports.forgotPassword = async (req, res) => {
     }
 };
 
-//otp verification
+// OTP verification for password reset
 exports.verifyOtp = async (req, res) => {
     const { otp } = req.body;
 
@@ -145,10 +145,13 @@ exports.verifyOtp = async (req, res) => {
     }
     try {
         const otpRecord = await OTP.findOne({ otp });
-        if (!otpRecord) {
+        if (!otpRecord || otpRecord.expiresAt < new Date()) {
             return res.status(400).json({ message: 'Invalid or expired OTP' });
         }
-        const resetToken = jwt.sign({ email: otpRecord.email }, process.env.RESET_PASSWORD_SECRET, { expiresIn: '10m' });
+        
+        // Fixed: Use JWT_SECRET if RESET_PASSWORD_SECRET is not defined
+        const resetSecret = process.env.RESET_PASSWORD_SECRET || process.env.JWT_SECRET;
+        const resetToken = jwt.sign({ email: otpRecord.email }, resetSecret, { expiresIn: '10m' });
 
         await OTP.deleteOne({ otp });
 
@@ -159,7 +162,7 @@ exports.verifyOtp = async (req, res) => {
     }
 };
 
-//Reset Password Api
+// Reset Password API
 exports.resetPassword = async (req, res) => {
     try {
         const { newPassword } = req.body;
@@ -175,7 +178,9 @@ exports.resetPassword = async (req, res) => {
 
         let decoded;
         try {
-            decoded = jwt.verify(resetToken, process.env.RESET_PASSWORD_SECRET);
+            // Fixed: Use JWT_SECRET if RESET_PASSWORD_SECRET is not defined
+            const resetSecret = process.env.RESET_PASSWORD_SECRET || process.env.JWT_SECRET;
+            decoded = jwt.verify(resetToken, resetSecret);
         } catch (error) {
             return res.status(401).json({ message: 'Invalid or expired reset token' });
         }
@@ -197,7 +202,6 @@ exports.resetPassword = async (req, res) => {
     }
 };
 
-
 // Login API 
 exports.login = async (req, res) => {
     const { email, password } = req.body;
@@ -207,7 +211,7 @@ exports.login = async (req, res) => {
     }
 
     try {
-        const user = await User.findOne({ email });
+        const user = await User.findOne({ email: email.toLowerCase() });
         if (!user || !(await bcrypt.compare(password, user.password))) {
             return res.status(400).json({ message: 'Invalid credentials' });
         }
@@ -234,8 +238,9 @@ exports.refreshToken = async (req, res) => {
     }
 
     try {
-        const decoded = jwt.verify(refreshToken, process.env.REFRESH_TOKEN_SECRET);
-        const user = await User.findById(decoded.userId);
+        // Fixed: Use JWT_SECRET instead of REFRESH_TOKEN_SECRET
+        const decoded = jwt.verify(refreshToken, process.env.JWT_SECRET);
+        const user = await User.findById(decoded.id); // Fixed: Use decoded.id instead of decoded.userId
 
         if (!user || user.refreshToken !== refreshToken) {
             return res.status(403).json({ message: 'Invalid refresh token' });
@@ -250,15 +255,15 @@ exports.refreshToken = async (req, res) => {
     }
 };
 
-const passport = require("passport");
-
 // Google Login Route
 exports.googleAuth = passport.authenticate("google", { scope: ["profile", "email"] });
 
 // Google Callback Route
 exports.googleAuthCallback = (req, res, next) => {
     passport.authenticate("google", { failureRedirect: "/signup" })(req, res, () => {
-        res.redirect("/dashboard");
+        // Fixed: You might want to redirect to your frontend URL with tokens
+        const frontendUrl = process.env.FRONTEND_URL || "http://localhost:3000";
+        res.redirect(`${frontendUrl}/dashboard`);
     });
 };
 
@@ -269,4 +274,3 @@ exports.logout = (req, res) => {
         res.redirect("/");
     });
 };
-
