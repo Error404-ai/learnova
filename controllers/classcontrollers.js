@@ -89,3 +89,31 @@ exports.toggleFavourite = async (req, res) => {
     res.status(500).json({ error: err.message });
   }
 };
+
+// Add Coordinator
+exports.addCoordinator = async (req, res) => {
+  try {
+    const { classId, userId } = req.body;
+    const classObj = await Class.findById(classId);
+    if (!classObj.coordinators.includes(userId)) {
+      classObj.coordinators.push(userId);
+      await classObj.save();
+    }
+    res.status(200).json({ message: 'Coordinator added' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
+
+// Remove Coordinator
+exports.removeCoordinator = async (req, res) => {
+  try {
+    const { classId, userId } = req.body;
+    const classObj = await Class.findById(classId);
+    classObj.coordinators = classObj.coordinators.filter(id => id != userId);
+    await classObj.save();
+    res.status(200).json({ message: 'Coordinator removed' });
+  } catch (err) {
+    res.status(500).json({ error: err.message });
+  }
+};
