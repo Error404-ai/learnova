@@ -1,11 +1,13 @@
 const Class = require('../models/Class');
 const User = require('../models/User');
 
-// Create Class (Only teachers can create classes)
+const generateClassCode = () => {
+  return Math.random().toString(36).substr(2, 8).toUpperCase(); // Generates 8-character code like "AB12CD34"
+};
 exports.createClass = async (req, res) => {
   try {
     const { className, subject, privacy, description } = req.body;
-    
+
     // Validate required fields
     if (!className || !subject) {
       return res.status(400).json({ 
@@ -22,19 +24,26 @@ exports.createClass = async (req, res) => {
       });
     }
 
+    // Generate a unique class code (you can later improve uniqueness by checking existing codes in DB)
+    const classCode = generateClassCode();
+
+    // Create new class
     const newClass = new Class({ 
       className, 
       subject, 
       privacy: privacy || 'private',
       description,
-      createdBy: req.user.id
+      createdBy: req.user.id,
+      classCode
     });
 
+    // Save the class to DB
     await newClass.save();
 
-    // Populate creator info
+    // Populate creator's name and email in response
     await newClass.populate('createdBy', 'name email');
 
+    // Send success response
     res.status(201).json({
       success: true,
       message: 'Class created successfully',
