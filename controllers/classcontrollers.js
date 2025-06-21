@@ -32,7 +32,6 @@ exports.createClass = async (req, res) => {
       className, 
       subject, 
       privacy: privacy || 'private',
-      description,
       createdBy: req.user.id,
       classCode
     });
@@ -53,7 +52,6 @@ exports.createClass = async (req, res) => {
         subject: newClass.subject,
         classCode: newClass.classCode,
         privacy: newClass.privacy,
-        description: newClass.description,
         createdBy: newClass.createdBy,
         studentsCount: newClass.students.length,
         createdAt: newClass.createdAt
