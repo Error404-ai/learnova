@@ -1,119 +1,537 @@
 const Class = require('../models/Class');
+const User = require('../models/User');
 
-// Create Class
+// Create Class (Only teachers can create classes)
 exports.createClass = async (req, res) => {
   try {
-    const { className, subject, privacy, createdBy } = req.body;
-    const newClass = new Class({ className, subject, privacy, createdBy });
+    const { className, subject, privacy, description } = req.body;
+    
+    // Validate required fields
+    if (!className || !subject) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Class name and subject are required' 
+      });
+    }
+
+    // Check if user is authenticated
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Authentication required' 
+      });
+    }
+
+    const newClass = new Class({ 
+      className, 
+      subject, 
+      privacy: privacy || 'private',
+      description,
+      createdBy: req.user.id
+    });
+
     await newClass.save();
-    res.status(201).json(newClass);
+
+    // Populate creator info
+    await newClass.populate('createdBy', 'name email');
+
+    res.status(201).json({
+      success: true,
+      message: 'Class created successfully',
+      class: {
+        _id: newClass._id,
+        className: newClass.className,
+        subject: newClass.subject,
+        classCode: newClass.classCode,
+        privacy: newClass.privacy,
+        description: newClass.description,
+        createdBy: newClass.createdBy,
+        studentsCount: newClass.students.length,
+        createdAt: newClass.createdAt
+      }
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error creating class:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to create class',
+      error: err.message 
+    });
   }
 };
 
-// Get All Classes (with filter)
+// Get All Classes (with filter) - User must be authenticated
 exports.getAllClasses = async (req, res) => {
   try {
-    const { userId, filter } = req.query;
+    const { filter } = req.query;
+    const userId = req.user.id;
     let classes;
 
     switch (filter) {
       case 'joined':
-        classes = await Class.find({ students: userId });
+        classes = await Class.find({ students: userId })
+          .populate('createdBy', 'name email')
+          .select('className subject classCode privacy studentsCount createdAt');
         break;
       case 'created':
-        classes = await Class.find({ createdBy: userId });
+        classes = await Class.find({ createdBy: userId })
+          .populate('createdBy', 'name email')
+          .populate('students', 'name email')
+          .select('className subject classCode privacy students createdAt');
         break;
       case 'favourite':
-        classes = await Class.find({ favourites: userId });
+        classes = await Class.find({ favourites: userId })
+          .populate('createdBy', 'name email')
+          .select('className subject classCode privacy studentsCount createdAt');
         break;
       default:
-        classes = await Class.find();
+        // Return only public classes or classes user is part of
+        classes = await Class.find({
+          $or: [
+            { privacy: 'public' },
+            { students: userId },
+            { createdBy: userId },
+            { coordinators: userId }
+          ]
+        })
+        .populate('createdBy', 'name email')
+        .select('className subject classCode privacy studentsCount createdAt');
     }
 
-    res.status(200).json(classes);
+    // Add student count to each class
+    const classesWithCount = classes.map(classItem => ({
+      ...classItem.toObject(),
+      studentsCount: classItem.students ? classItem.students.length : 0
+    }));
+
+    res.status(200).json({
+      success: true,
+      classes: classesWithCount,
+      count: classesWithCount.length
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error fetching classes:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch classes',
+      error: err.message 
+    });
   }
 };
 
-// Join Class
-exports.joinClass = async (req, res) => {
+// Join Class using Class Code
+exports.joinClassByCode = async (req, res) => {
   try {
-    const { classId, userId } = req.body;
+    const { classCode } = req.body;
+    const userId = req.user.id;
+
+    if (!classCode) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Class code is required' 
+      });
+    }
+
+    // Find class by code
+    const classObj = await Class.findOne({ classCode: classCode.toUpperCase() })
+      .populate('createdBy', 'name email');
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Invalid class code' 
+      });
+    }
+
+    // Check if user is the creator
+    if (classObj.createdBy._id.toString() === userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Cannot join your own class' 
+      });
+    }
+
+    // Check if already joined
+    if (classObj.students.includes(userId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Already joined this class' 
+      });
+    }
+
+    // Add student to class
+    classObj.students.push(userId);
+    await classObj.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Successfully joined the class',
+      class: {
+        _id: classObj._id,
+        className: classObj.className,
+        subject: classObj.subject,
+        classCode: classObj.classCode,
+        createdBy: classObj.createdBy
+      }
+    });
+  } catch (err) {
+    console.error('Error joining class:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to join class',
+      error: err.message 
+    });
+  }
+};
+
+// Leave Class
+exports.leaveClass = async (req, res) => {
+  try {
+    const { classId } = req.body;
+    const userId = req.user.id;
+
+    if (!classId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Class ID is required' 
+      });
+    }
+
     const classObj = await Class.findById(classId);
 
-    if (!classObj.students.includes(userId)) {
-      classObj.students.push(userId);
-      await classObj.save();
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
     }
 
-    res.status(200).json({ message: 'Joined class successfully' });
+    // Check if user is the creator
+    if (classObj.createdBy.toString() === userId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Cannot leave your own class. Delete it instead.' 
+      });
+    }
+
+    // Remove student from class
+    classObj.students = classObj.students.filter(id => id.toString() !== userId);
+    classObj.favourites = classObj.favourites.filter(id => id.toString() !== userId);
+    await classObj.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Successfully left the class' 
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error leaving class:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to leave class',
+      error: err.message 
+    });
   }
 };
 
-// Get Class Details
+// Get Class Details by ID
 exports.getClassById = async (req, res) => {
   try {
-    const classId = req.params.classId;
-    const classObj = await Class.findById(classId)
-      .populate('createdBy', 'name')
-      .populate('students', 'name')
-      .populate('coordinators', 'name');
+    const { classId } = req.params;
+    const userId = req.user.id;
 
-    res.status(200).json(classObj);
+    const classObj = await Class.findById(classId)
+      .populate('createdBy', 'name email profilePicture')
+      .populate('students', 'name email profilePicture')
+      .populate('coordinators', 'name email profilePicture');
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
+    }
+
+    // Check if user has access to this class
+    const hasAccess = classObj.privacy === 'public' || 
+                     classObj.createdBy._id.toString() === userId ||
+                     classObj.students.some(student => student._id.toString() === userId) ||
+                     classObj.coordinators.some(coord => coord._id.toString() === userId);
+
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied to this class' 
+      });
+    }
+
+    // Check if current user is joined
+    const isJoined = classObj.students.some(student => student._id.toString() === userId);
+    const isFavourite = classObj.favourites.includes(userId);
+    const isCreator = classObj.createdBy._id.toString() === userId;
+
+    res.status(200).json({
+      success: true,
+      class: {
+        ...classObj.toObject(),
+        isJoined,
+        isFavourite,
+        isCreator,
+        studentsCount: classObj.students.length
+      }
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error fetching class details:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch class details',
+      error: err.message 
+    });
+  }
+};
+
+// Get Class Details by Class Code
+exports.getClassByCode = async (req, res) => {
+  try {
+    const { classCode } = req.params;
+    const userId = req.user.id;
+
+    const classObj = await Class.findOne({ classCode: classCode.toUpperCase() })
+      .populate('createdBy', 'name email profilePicture')
+      .select('className subject classCode privacy description createdBy studentsCount createdAt');
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found with this code' 
+      });
+    }
+
+    // Check if already joined
+    const isJoined = await Class.findOne({ 
+      classCode: classCode.toUpperCase(), 
+      students: userId 
+    });
+
+    res.status(200).json({
+      success: true,
+      class: {
+        ...classObj.toObject(),
+        isJoined: !!isJoined,
+        studentsCount: classObj.students ? classObj.students.length : 0
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching class by code:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch class details',
+      error: err.message 
+    });
   }
 };
 
 // Toggle Favourite
 exports.toggleFavourite = async (req, res) => {
   try {
-    const { classId, userId } = req.body;
+    const { classId } = req.body;
+    const userId = req.user.id;
+
+    if (!classId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Class ID is required' 
+      });
+    }
+
     const classObj = await Class.findById(classId);
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
+    }
 
     const index = classObj.favourites.indexOf(userId);
+    let action;
+
     if (index === -1) {
       classObj.favourites.push(userId);
+      action = 'added to';
     } else {
       classObj.favourites.splice(index, 1);
+      action = 'removed from';
     }
 
     await classObj.save();
-    res.status(200).json({ message: 'Updated favourites' });
+
+    res.status(200).json({ 
+      success: true, 
+      message: `Class ${action} favourites`,
+      isFavourite: index === -1
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error toggling favourite:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to update favourites',
+      error: err.message 
+    });
   }
 };
 
-// Add Coordinator
+// Add Coordinator (Only class creator can add coordinators)
 exports.addCoordinator = async (req, res) => {
   try {
-    const { classId, userId } = req.body;
-    const classObj = await Class.findById(classId);
-    if (!classObj.coordinators.includes(userId)) {
-      classObj.coordinators.push(userId);
-      await classObj.save();
+    const { classId, userEmail } = req.body;
+    const userId = req.user.id;
+
+    if (!classId || !userEmail) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Class ID and user email are required' 
+      });
     }
-    res.status(200).json({ message: 'Coordinator added' });
+
+    const classObj = await Class.findById(classId);
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
+    }
+
+    // Check if current user is the creator
+    if (classObj.createdBy.toString() !== userId) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Only class creator can add coordinators' 
+      });
+    }
+
+    // Find user by email
+    const userToAdd = await User.findOne({ email: userEmail.toLowerCase() });
+
+    if (!userToAdd) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'User not found with this email' 
+      });
+    }
+
+    // Check if user is already a coordinator
+    if (classObj.coordinators.includes(userToAdd._id)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'User is already a coordinator' 
+      });
+    }
+
+    classObj.coordinators.push(userToAdd._id);
+    await classObj.save();
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Coordinator added successfully',
+      coordinator: {
+        _id: userToAdd._id,
+        name: userToAdd.name,
+        email: userToAdd.email
+      }
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error adding coordinator:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to add coordinator',
+      error: err.message 
+    });
   }
 };
 
-// Remove Coordinator
+// Remove Coordinator (Only class creator can remove coordinators)
 exports.removeCoordinator = async (req, res) => {
   try {
-    const { classId, userId } = req.body;
+    const { classId, coordinatorId } = req.body;
+    const userId = req.user.id;
+
+    if (!classId || !coordinatorId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Class ID and coordinator ID are required' 
+      });
+    }
+
     const classObj = await Class.findById(classId);
-    classObj.coordinators = classObj.coordinators.filter(id => id != userId);
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
+    }
+
+    // Check if current user is the creator
+    if (classObj.createdBy.toString() !== userId) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Only class creator can remove coordinators' 
+      });
+    }
+
+    classObj.coordinators = classObj.coordinators.filter(id => id.toString() !== coordinatorId);
     await classObj.save();
-    res.status(200).json({ message: 'Coordinator removed' });
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Coordinator removed successfully' 
+    });
   } catch (err) {
-    res.status(500).json({ error: err.message });
+    console.error('Error removing coordinator:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to remove coordinator',
+      error: err.message 
+    });
+  }
+};
+
+// Delete Class (Only creator can delete)
+exports.deleteClass = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const userId = req.user.id;
+
+    const classObj = await Class.findById(classId);
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
+    }
+
+    // Check if current user is the creator
+    if (classObj.createdBy.toString() !== userId) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Only class creator can delete the class' 
+      });
+    }
+
+    await Class.findByIdAndDelete(classId);
+
+    res.status(200).json({ 
+      success: true, 
+      message: 'Class deleted successfully' 
+    });
+  } catch (err) {
+    console.error('Error deleting class:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to delete class',
+      error: err.message 
+    });
   }
 };

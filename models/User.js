@@ -1,7 +1,6 @@
 const mongoose = require("mongoose");
 
 const userSchema = new mongoose.Schema({
-  // Basic user information
   name: { type: String, required: true, trim: true },
   email: { type: String, required: true, unique: true },
   isVerified: { type: Boolean, default: false },
@@ -17,12 +16,11 @@ const userSchema = new mongoose.Schema({
   bio: { type: String, default: "", maxlength: 500 },
   phone: { type: String, default: "" },
   
-  // Academic information
-  grade: { type: String, default: "" }, // For students
-  subject: { type: String, default: "" }, // For teachers
+  grade: { type: String, default: "" }, 
+  subject: { type: String, default: "" }, 
   school: { type: String, default: "" },
-  studentId: { type: String, default: "" }, // For students
-  teacherId: { type: String, default: "" }, // For teachers
+  studentId: { type: String, default: "" },
+  teacherId: { type: String, default: "" }, 
 
   // Classroom relationships
   classrooms: [{

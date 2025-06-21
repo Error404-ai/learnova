@@ -1,21 +1,29 @@
 const express = require('express');
 const router = express.Router();
+const { protect } = require('../middlewares/authMiddleware');
 const {
   createClass,
   getAllClasses,
-  joinClass,
+  joinClassByCode,
+  leaveClass,
   getClassById,
-  toggleFavourite, addCoordinator,
-  removeCoordinator
+  getClassByCode,
+  toggleFavourite,
+  addCoordinator,
+  removeCoordinator,
+  deleteClass
 } = require('../controllers/classcontrollers');
 
-router.post('/', createClass);
-router.get('/all', getAllClasses);
-router.post('/join', joinClass);
-router.get('/:classId', getClassById);
-router.post('/favourite', toggleFavourite);
-router.post('/add-coordinator', addCoordinator);
-router.post('/remove-coordinator', removeCoordinator);
+router.use(protect);
 
-
+router.post('/', createClass);                        
+router.get('/all', getAllClasses);                     
+router.get('/:classId', getClassById);                 
+router.delete('/:classId', deleteClass);           
+router.get('/code/:classCode', getClassByCode);        
+router.post('/join-by-code', joinClassByCode);       
+router.post('/leave', leaveClass);                     
+router.post('/favourite', toggleFavourite);          
+router.post('/add-coordinator', addCoordinator);        
+router.post('/remove-coordinator', removeCoordinator);  
 module.exports = router;
