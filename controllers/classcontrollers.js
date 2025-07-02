@@ -70,8 +70,22 @@ exports.createClass = async (req, res) => {
 // Get All Classes (with filter) - User must be authenticated
 exports.getAllClasses = async (req, res) => {
   try {
+    console.log('req.user:', req.user); // Debug: Check if user exists
+    console.log('req.user.id:', req.user?.id); // Debug: Check user ID
+    
     const { filter } = req.query;
+    
+    // Check if user is authenticated
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({ 
+        success: false, 
+        message: 'Authentication required - user not found in request' 
+      });
+    }
+    
     const userId = req.user.id;
+    console.log('Using userId:', userId); // Debug: Confirm userId
+    
     let classes;
 
     switch (filter) {
@@ -81,10 +95,12 @@ exports.getAllClasses = async (req, res) => {
           .select('className subject classCode privacy studentsCount createdAt');
         break;
       case 'created':
+        console.log('Fetching created classes for userId:', userId); // Debug
         classes = await Class.find({ createdBy: userId })
           .populate('createdBy', 'name email')
           .populate('students', 'name email')
           .select('className subject classCode privacy students createdAt');
+        console.log('Found created classes:', classes.length); // Debug
         break;
       case 'favourite':
         classes = await Class.find({ favourites: userId })
@@ -125,7 +141,6 @@ exports.getAllClasses = async (req, res) => {
     });
   }
 };
-
 // Join Class using Class Code
 exports.joinClassByCode = async (req, res) => {
   try {
