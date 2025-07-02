@@ -557,3 +557,151 @@ exports.deleteClass = async (req, res) => {
     });
   }
 };
+exports.getClassmates = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const userId = req.user.id;
+
+    if (!classId) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Class ID is required' 
+      });
+    }
+
+    const classObj = await Class.findById(classId)
+      .populate('students', 'name email profilePicture bio message lastSeen')
+      .populate('createdBy', 'name email profilePicture bio message lastSeen');
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
+    }
+
+    // Check if user has access to this class
+    const hasAccess = classObj.privacy === 'public' || 
+                     classObj.createdBy._id.toString() === userId ||
+                     classObj.students.some(student => student._id.toString() === userId) ||
+                     classObj.coordinators.some(coord => coord._id.toString() === userId);
+
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied to this class' 
+      });
+    }
+
+    // Combine all class members (students + creator)
+    let classmates = [...classObj.students];
+    
+    // Add creator to classmates if not already a student
+    const creatorIsStudent = classObj.students.some(student => 
+      student._id.toString() === classObj.createdBy._id.toString()
+    );
+    
+    if (!creatorIsStudent) {
+      classmates.push(classObj.createdBy);
+    }
+
+    // Filter out current user from classmates list
+    classmates = classmates.filter(classmate => 
+      classmate._id.toString() !== userId
+    );
+
+    // Format classmates data
+    const formattedClassmates = classmates.map(classmate => ({
+      _id: classmate._id,
+      name: classmate.name,
+      email: classmate.email,
+      profilePicture: classmate.profilePicture || null,
+      message: classmate.message || classmate.bio || "Hi Sarah, I have scheduled our next lesson for tomorrow at 3 PM. See you then!",
+      lastSeen: classmate.lastSeen || new Date(),
+      isOnline: classmate.lastSeen && (new Date() - new Date(classmate.lastSeen)) < 5 * 60 * 1000 // Online if last seen within 5 minutes
+    }));
+
+    res.status(200).json({
+      success: true,
+      classmates: formattedClassmates,
+      count: formattedClassmates.length,
+      className: classObj.className
+    });
+
+  } catch (err) {
+    console.error('Error fetching classmates:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch classmates',
+      error: err.message 
+    });
+  }
+};
+
+// Update the existing getClassById method to include more student details
+exports.getClassById = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const userId = req.user.id;
+
+    const classObj = await Class.findById(classId)
+      .populate('createdBy', 'name email profilePicture bio message lastSeen')
+      .populate('students', 'name email profilePicture bio message lastSeen')
+      .populate('coordinators', 'name email profilePicture bio message lastSeen');
+
+    if (!classObj) {
+      return res.status(404).json({ 
+        success: false, 
+        message: 'Class not found' 
+      });
+    }
+
+    // Check if user has access to this class
+    const hasAccess = classObj.privacy === 'public' || 
+                     classObj.createdBy._id.toString() === userId ||
+                     classObj.students.some(student => student._id.toString() === userId) ||
+                     classObj.coordinators.some(coord => coord._id.toString() === userId);
+
+    if (!hasAccess) {
+      return res.status(403).json({ 
+        success: false, 
+        message: 'Access denied to this class' 
+      });
+    }
+
+    // Check if current user is joined
+    const isJoined = classObj.students.some(student => student._id.toString() === userId);
+    const isFavourite = classObj.favourites.includes(userId);
+    const isCreator = classObj.createdBy._id.toString() === userId;
+
+    // Format students data with additional info
+    const formattedStudents = classObj.students.map(student => ({
+      _id: student._id,
+      name: student.name,
+      email: student.email,
+      profilePicture: student.profilePicture || null,
+      message: student.message || student.bio || "Available for study sessions",
+      lastSeen: student.lastSeen || new Date(),
+      isOnline: student.lastSeen && (new Date() - new Date(student.lastSeen)) < 5 * 60 * 1000
+    }));
+
+    res.status(200).json({
+      success: true,
+      class: {
+        ...classObj.toObject(),
+        students: formattedStudents,
+        isJoined,
+        isFavourite,
+        isCreator,
+        studentsCount: classObj.students.length
+      }
+    });
+  } catch (err) {
+    console.error('Error fetching class details:', err);
+    res.status(500).json({ 
+      success: false, 
+      message: 'Failed to fetch class details',
+      error: err.message 
+    });
+  }
+};

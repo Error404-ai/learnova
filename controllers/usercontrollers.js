@@ -20,7 +20,8 @@ exports.updateProfile = async (req, res) => {
             school, 
             studentId, 
             teacherId,
-            profilePicture
+            profilePicture,
+            message  // Add message field
         } = req.body;
 
         const user = await User.findById(userId);
@@ -40,6 +41,7 @@ exports.updateProfile = async (req, res) => {
         if (studentId !== undefined) user.studentId = studentId;
         if (teacherId !== undefined) user.teacherId = teacherId;
         if (profilePicture !== undefined) user.profilePicture = profilePicture;
+        if (message !== undefined) user.message = message; // Add message update
 
         await user.save();
 
@@ -56,11 +58,48 @@ exports.updateProfile = async (req, res) => {
                 school: user.school,
                 studentId: user.studentId,
                 teacherId: user.teacherId,
-                profilePicture: user.profilePicture
+                profilePicture: user.profilePicture,
+                message: user.message  // Include message in response
             }
         });
     } catch (error) {
         console.error("Error in updateProfile:", error);
+        res.status(500).json({ error: "Internal server error", details: error.message });
+    }
+};
+
+// Add a new method to update user status message
+exports.updateMessage = async (req, res) => {
+    try {
+        if (!req.user || !req.user.id) {
+            return res.status(400).json({ error: "User ID not found in token" });
+        }
+
+        const userId = req.user.id;
+        const { message } = req.body;
+
+        if (!message || message.trim().length === 0) {
+            return res.status(400).json({ error: "Message is required" });
+        }
+
+        if (message.length > 200) {
+            return res.status(400).json({ error: "Message must be less than 200 characters" });
+        }
+
+        const user = await User.findById(userId);
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        user.message = message.trim();
+        await user.save();
+
+        res.json({ 
+            message: "Status message updated successfully", 
+            userMessage: user.message
+        });
+    } catch (error) {
+        console.error("Error in updateMessage:", error);
         res.status(500).json({ error: "Internal server error", details: error.message });
     }
 };

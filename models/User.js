@@ -6,6 +6,21 @@ const userSchema = new mongoose.Schema({
   isVerified: { type: Boolean, default: false },
   password: { type: String, required: true },
   refreshToken: { type: String, default: "" },
+  message: {
+    type: String,
+    maxlength: 200,
+    default: "Hi! I'm available for study sessions and group discussions."
+  },
+  
+  lastSeen: {
+    type: Date,
+    default: Date.now
+  },
+  
+  isOnline: {
+    type: Boolean,
+    default: false
+  },
 
  role: { 
   type: String, 
@@ -81,6 +96,20 @@ const userSchema = new mongoose.Schema({
   
 }, {
   timestamps: true // Adds createdAt and updatedAt automatically
+});
+// Add a method to update last seen
+userSchema.methods.updateLastSeen = function() {
+  this.lastSeen = new Date();
+  this.isOnline = true;
+  return this.save();
+};
+
+// Add a pre-save hook to update lastSeen on any save
+userSchema.pre('save', function(next) {
+  if (this.isModified() && !this.isModified('lastSeen')) {
+    this.lastSeen = new Date();
+  }
+  next();
 });
 
 
