@@ -210,6 +210,11 @@ exports.login = async (req, res) => {
         return res.status(400).json({ message: 'Email and password are required' });
     }
 
+    const passwordRegex = /^(?=.*[0-9])(?=.*[!@#$%^&*])[A-Za-z0-9!@#$%^&*]{5,}$/;
+    if (!passwordRegex.test(password)) {
+        return res.status(400).json({ message: 'Password must be at least 5 characters long, contain at least 1 special character and 1 number' });
+    }
+
     try {
         const user = await User.findOne({ email: email.toLowerCase() });
         if (!user || !(await bcrypt.compare(password, user.password))) {
@@ -228,6 +233,7 @@ exports.login = async (req, res) => {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 };
+
 
 // Refresh Token API
 exports.refreshToken = async (req, res) => {
