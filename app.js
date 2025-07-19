@@ -8,6 +8,7 @@ const helmet = require("helmet");
 const bodyParser = require('body-parser');
 const userRoutes = require("./routes/userroutes");
 const classRoutes = require('./routes/classroutes');
+const assignmentRoutes = require('./routes/assignmentroutes');
 
 
 dotenv.config(); 
@@ -55,3 +56,4 @@ const authRoutes = require('./routes/auth');
 app.use('/api/auth', authRoutes);
 app.use("/user", userRoutes);
 app.use('/api/class', classRoutes);
+app.use('/api/assign', assignmentRoutes);
