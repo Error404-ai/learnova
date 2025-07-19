@@ -8,15 +8,12 @@ exports.createClass = async (req, res) => {
   try {
     const { className, subject, privacy, description } = req.body;
 
-    // Validate required fields
     if (!className || !subject) {
       return res.status(400).json({ 
         success: false, 
         message: 'Class name and subject are required' 
       });
     }
-
-    // Check if user is authenticated
     if (!req.user || !req.user.id) {
       return res.status(401).json({ 
         success: false, 
@@ -24,7 +21,6 @@ exports.createClass = async (req, res) => {
       });
     }
 
-    // Generate a unique class code (you can later improve uniqueness by checking existing codes in DB)
     const classCode = generateClassCode();
 
     // Create new class
@@ -108,7 +104,6 @@ exports.getAllClasses = async (req, res) => {
           .select('className subject classCode privacy studentsCount createdAt');
         break;
       default:
-        // Return only public classes or classes user is part of
         classes = await Class.find({
           $or: [
             { privacy: 'public' },
@@ -534,7 +529,7 @@ exports.deleteClass = async (req, res) => {
       });
     }
 
-    // Check if current user is the creator
+
     if (classObj.createdBy.toString() !== userId) {
       return res.status(403).json({ 
         success: false, 
@@ -568,10 +563,18 @@ exports.getClassmates = async (req, res) => {
         message: 'Class ID is required' 
       });
     }
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid Class ID format' 
+      });
+    }
 
     const classObj = await Class.findById(classId)
       .populate('students', 'name email profilePicture bio message lastSeen')
-      .populate('createdBy', 'name email profilePicture bio message lastSeen');
+      .populate('createdBy', 'name email profilePicture bio message lastSeen')
+      .populate('coordinators', 'name email profilePicture bio message lastSeen');
 
     if (!classObj) {
       return res.status(404).json({ 
@@ -580,7 +583,6 @@ exports.getClassmates = async (req, res) => {
       });
     }
 
-    // Check if user has access to this class
     const hasAccess = classObj.privacy === 'public' || 
                      classObj.createdBy._id.toString() === userId ||
                      classObj.students.some(student => student._id.toString() === userId) ||
@@ -593,10 +595,9 @@ exports.getClassmates = async (req, res) => {
       });
     }
 
-    // Combine all class members (students + creator)
     let classmates = [...classObj.students];
     
-    // Add creator to classmates if not already a student
+
     const creatorIsStudent = classObj.students.some(student => 
       student._id.toString() === classObj.createdBy._id.toString()
     );
@@ -605,18 +606,27 @@ exports.getClassmates = async (req, res) => {
       classmates.push(classObj.createdBy);
     }
 
-    // Filter out current user from classmates list
+    if (classObj.coordinators && classObj.coordinators.length > 0) {
+      classObj.coordinators.forEach(coordinator => {
+        const isAlreadyIncluded = classmates.some(mate => 
+          mate._id.toString() === coordinator._id.toString()
+        );
+        if (!isAlreadyIncluded) {
+          classmates.push(coordinator);
+        }
+      });
+    }
+
     classmates = classmates.filter(classmate => 
       classmate._id.toString() !== userId
     );
 
-    // Format classmates data
     const formattedClassmates = classmates.map(classmate => ({
       _id: classmate._id,
       name: classmate.name,
       email: classmate.email,
       profilePicture: classmate.profilePicture || null,
-      message: classmate.message || classmate.bio || "Hi Sarah, I have scheduled our next lesson for tomorrow at 3 PM. See you then!",
+      message: classmate.message || classmate.bio || "Available for study sessions",
       lastSeen: classmate.lastSeen || new Date(),
       isOnline: classmate.lastSeen && (new Date() - new Date(classmate.lastSeen)) < 5 * 60 * 1000 // Online if last seen within 5 minutes
     }));
@@ -638,11 +648,18 @@ exports.getClassmates = async (req, res) => {
   }
 };
 
-// Update the existing getClassById method to include more student details
 exports.getClassById = async (req, res) => {
   try {
     const { classId } = req.params;
     const userId = req.user.id;
+
+    const mongoose = require('mongoose');
+    if (!mongoose.Types.ObjectId.isValid(classId)) {
+      return res.status(400).json({ 
+        success: false, 
+        message: 'Invalid Class ID format' 
+      });
+    }
 
     const classObj = await Class.findById(classId)
       .populate('createdBy', 'name email profilePicture bio message lastSeen')
@@ -656,7 +673,6 @@ exports.getClassById = async (req, res) => {
       });
     }
 
-    // Check if user has access to this class
     const hasAccess = classObj.privacy === 'public' || 
                      classObj.createdBy._id.toString() === userId ||
                      classObj.students.some(student => student._id.toString() === userId) ||
@@ -669,12 +685,10 @@ exports.getClassById = async (req, res) => {
       });
     }
 
-    // Check if current user is joined
     const isJoined = classObj.students.some(student => student._id.toString() === userId);
     const isFavourite = classObj.favourites.includes(userId);
     const isCreator = classObj.createdBy._id.toString() === userId;
 
-    // Format students data with additional info
     const formattedStudents = classObj.students.map(student => ({
       _id: student._id,
       name: student.name,

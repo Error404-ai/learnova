@@ -1,8 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middlewares/authMiddleware');
+const { protect } = require('../middlewares/authMiddleware'); 
 const userController = require('../controllers/usercontrollers');
-const auth = require('../middleware/auth');
 const {
   createClass,
   getAllClasses,
@@ -29,6 +28,7 @@ router.post('/leave', leaveClass);
 router.post('/favourite', toggleFavourite);          
 router.post('/add-coordinator', addCoordinator);        
 router.post('/remove-coordinator', removeCoordinator);  
-router.get('/classmates/:classId', auth, getClassmates);
-router.put('/user/message', auth, userController.updateMessage);
+
+router.get('/classmates/:classId', getClassmates);
+
 module.exports = router;
