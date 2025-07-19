@@ -7,7 +7,7 @@ const {
   getAssignmentById,
   updateAssignment,
   deleteAssignment
-} = require('../controllers/assignmentController');
+} = require('../controllers/assignmentcontrollers');
 
 router.use(protect);
 
