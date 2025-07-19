@@ -57,6 +57,14 @@ exports.createAssignment = async (req, res) => {
       });
     }
 
+    // Validate maxMarks if provided
+    if (maxMarks !== undefined && (isNaN(maxMarks) || maxMarks <= 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum marks must be a positive number'
+      });
+    }
+
     const newAssignment = new Assignment({
       title,
       description,
@@ -265,6 +273,14 @@ exports.updateAssignment = async (req, res) => {
       return res.status(400).json({
         success: false,
         message: 'Due date cannot be in the past'
+      });
+    }
+
+    // Validate maxMarks if being updated
+    if (updateData.maxMarks !== undefined && (isNaN(updateData.maxMarks) || updateData.maxMarks <= 0)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Maximum marks must be a positive number'
       });
     }
 
