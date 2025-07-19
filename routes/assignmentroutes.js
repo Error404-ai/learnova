@@ -11,7 +11,7 @@ const {
   gradeSubmission,
   getSubmissionsForAssignment,
   getMySubmission
-} = require('../controllers/assignmentcontroller');
+} = require('../controllers/assignmentcontrollers');
 
 router.use(protect);
 
