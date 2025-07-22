@@ -743,3 +743,354 @@ exports.getAssignmentStats = async (req, res) => {
     });
   }
 };
+// Submit Assignment (for students)
+exports.submitAssignment = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const { content, attachments } = req.body;
+    const userId = req.user?.id;
+
+    console.log('Submit assignment:', { assignmentId, userId, content, attachments });
+
+    if (!assignmentId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Assignment ID is required'
+      });
+    }
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+    if (!isValidObjectId(assignmentId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid Assignment ID format'
+      });
+    }
+
+    if (!content?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Submission content is required'
+      });
+    }
+    const assignment = await Assignment.findById(assignmentId)
+      .populate('classId', 'students className');
+
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Assignment not found'
+      });
+    }
+
+    const isStudent = assignment.classId.students.some(
+      student => student.toString() === userId
+    );
+
+    if (!isStudent) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only enrolled students can submit assignments'
+      });
+    }
+    if (assignment.status !== 'active') {
+      return res.status(400).json({
+        success: false,
+        message: 'Assignment is not active for submissions'
+      });
+    }
+    const now = new Date();
+    const isOverdue = assignment.dueDate && now > new Date(assignment.dueDate);
+    
+    if (isOverdue && !assignment.allowLateSubmission) {
+      return res.status(400).json({
+        success: false,
+        message: 'Assignment deadline has passed and late submissions are not allowed'
+      });
+    }
+    const existingSubmissionIndex = assignment.submissions.findIndex(
+      sub => sub.studentId.toString() === userId
+    );
+
+    const submissionData = {
+      studentId: new mongoose.Types.ObjectId(userId),
+      content: content.trim(),
+      attachments: Array.isArray(attachments) ? attachments : [],
+      submittedAt: now,
+      isLate: isOverdue,
+      status: 'submitted'
+    };
+
+    if (existingSubmissionIndex !== -1) {
+      assignment.submissions[existingSubmissionIndex] = {
+        ...assignment.submissions[existingSubmissionIndex].toObject(),
+        ...submissionData,
+        resubmittedAt: now
+      };
+    } else {
+      assignment.submissions.push(submissionData);
+    }
+
+    await assignment.save();
+
+    // Populate the updated assignment
+    await assignment.populate('submissions.studentId', 'name email');
+
+    const userSubmission = assignment.submissions.find(
+      sub => sub.studentId._id.toString() === userId
+    );
+
+    res.status(200).json({
+      success: true,
+      message: existingSubmissionIndex !== -1 ? 'Assignment resubmitted successfully' : 'Assignment submitted successfully',
+      submission: userSubmission,
+      isLate: isOverdue,
+      submittedAt: now
+    });
+
+  } catch (err) {
+    console.error('Error submitting assignment:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to submit assignment',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+  }
+};
+
+// Get Assignment Submissions (for instructors/coordinators)
+exports.getAssignmentSubmissions = async (req, res) => {
+  try {
+    const { assignmentId } = req.params;
+    const { status, sortBy, sortOrder, page, limit } = req.query;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!isValidObjectId(assignmentId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid Assignment ID format'
+      });
+    }
+
+    const assignment = await Assignment.findById(assignmentId)
+      .populate('classId', 'createdBy coordinators className')
+      .populate('submissions.studentId', 'name email profilePicture');
+
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Assignment not found'
+      });
+    }
+
+    // Check permissions
+    const isCreator = assignment.createdBy.toString() === userId;
+    const isClassCreator = assignment.classId.createdBy.toString() === userId;
+    const isCoordinator = assignment.classId.coordinators.some(coord => coord.toString() === userId);
+
+    if (!isCreator && !isClassCreator && !isCoordinator) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    let submissions = assignment.submissions || [];
+
+    // Filter by status if provided
+    if (status) {
+      const validStatuses = ['submitted', 'graded', 'pending'];
+      if (validStatuses.includes(status)) {
+        submissions = submissions.filter(sub => {
+          if (status === 'graded') return sub.marks !== undefined;
+          if (status === 'pending') return sub.marks === undefined;
+          return sub.status === status;
+        });
+      }
+    }
+
+    // Sorting
+    if (sortBy) {
+      const validSortFields = ['submittedAt', 'marks', 'studentName'];
+      if (validSortFields.includes(sortBy)) {
+        submissions.sort((a, b) => {
+          let aVal, bVal;
+          
+          if (sortBy === 'studentName') {
+            aVal = a.studentId?.name || '';
+            bVal = b.studentId?.name || '';
+          } else if (sortBy === 'marks') {
+            aVal = a.marks || 0;
+            bVal = b.marks || 0;
+          } else {
+            aVal = new Date(a[sortBy]);
+            bVal = new Date(b[sortBy]);
+          }
+
+          if (sortOrder === 'asc') {
+            return aVal > bVal ? 1 : -1;
+          } else {
+            return aVal < bVal ? 1 : -1;
+          }
+        });
+      }
+    }
+
+    // Pagination
+    const pageNumber = Math.max(1, parseInt(page) || 1);
+    const limitNumber = Math.min(50, Math.max(1, parseInt(limit) || 20));
+    const startIndex = (pageNumber - 1) * limitNumber;
+    const endIndex = startIndex + limitNumber;
+
+    const paginatedSubmissions = submissions.slice(startIndex, endIndex);
+    const totalPages = Math.ceil(submissions.length / limitNumber);
+
+    res.status(200).json({
+      success: true,
+      submissions: paginatedSubmissions,
+      assignment: {
+        _id: assignment._id,
+        title: assignment.title,
+        maxMarks: assignment.maxMarks,
+        dueDate: assignment.dueDate,
+        className: assignment.classId.className
+      },
+      pagination: {
+        currentPage: pageNumber,
+        totalPages,
+        totalCount: submissions.length,
+        hasNext: pageNumber < totalPages,
+        hasPrev: pageNumber > 1,
+        limit: limitNumber
+      }
+    });
+
+  } catch (err) {
+    console.error('Error fetching assignment submissions:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch assignment submissions',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+  }
+};
+
+// Grade Assignment Submission
+exports.gradeSubmission = async (req, res) => {
+  try {
+    const { assignmentId, submissionId } = req.params;
+    const { marks, feedback } = req.body;
+    const userId = req.user?.id;
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    if (!isValidObjectId(assignmentId) || !isValidObjectId(submissionId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid ID format'
+      });
+    }
+
+    // Validate marks
+    if (marks === undefined || marks === null) {
+      return res.status(400).json({
+        success: false,
+        message: 'Marks are required'
+      });
+    }
+
+    const marksNumber = Number(marks);
+    if (isNaN(marksNumber) || marksNumber < 0) {
+      return res.status(400).json({
+        success: false,
+        message: 'Marks must be a non-negative number'
+      });
+    }
+
+    const assignment = await Assignment.findById(assignmentId)
+      .populate('classId', 'createdBy coordinators');
+
+    if (!assignment) {
+      return res.status(404).json({
+        success: false,
+        message: 'Assignment not found'
+      });
+    }
+
+    // Check permissions
+    const isCreator = assignment.createdBy.toString() === userId;
+    const isClassCreator = assignment.classId.createdBy.toString() === userId;
+    const isCoordinator = assignment.classId.coordinators.some(coord => coord.toString() === userId);
+
+    if (!isCreator && !isClassCreator && !isCoordinator) {
+      return res.status(403).json({
+        success: false,
+        message: 'Access denied'
+      });
+    }
+
+    // Validate marks against maxMarks
+    if (marksNumber > assignment.maxMarks) {
+      return res.status(400).json({
+        success: false,
+        message: `Marks cannot exceed maximum marks (${assignment.maxMarks})`
+      });
+    }
+
+    // Find and update submission
+    const submissionIndex = assignment.submissions.findIndex(
+      sub => sub._id.toString() === submissionId
+    );
+
+    if (submissionIndex === -1) {
+      return res.status(404).json({
+        success: false,
+        message: 'Submission not found'
+      });
+    }
+
+    assignment.submissions[submissionIndex].marks = marksNumber;
+    assignment.submissions[submissionIndex].feedback = feedback?.trim() || '';
+    assignment.submissions[submissionIndex].gradedAt = new Date();
+    assignment.submissions[submissionIndex].gradedBy = new mongoose.Types.ObjectId(userId);
+    assignment.submissions[submissionIndex].status = 'graded';
+
+    await assignment.save();
+
+    await assignment.populate('submissions.studentId', 'name email');
+    await assignment.populate('submissions.gradedBy', 'name email');
+
+    const gradedSubmission = assignment.submissions[submissionIndex];
+
+    res.status(200).json({
+      success: true,
+      message: 'Submission graded successfully',
+      submission: gradedSubmission
+    });
+
+  } catch (err) {
+      console.error('Error grading submission:', err);
+      res.status(500).json({
+        success: false,
+        message: 'Failed to grade submission',
+        error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+      });
+    }
+  };
