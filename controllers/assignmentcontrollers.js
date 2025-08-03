@@ -5,13 +5,10 @@ const multer = require('multer');
 const path = require('path');
 const fs = require('fs');
 
-// Move multer configuration to the top
-// Configure multer for file storage
 const storage = multer.diskStorage({
   destination: function (req, file, cb) {
     const uploadPath = 'uploads/assignments/';
-    
-    // Create directory if it doesn't exist
+  
     if (!fs.existsSync(uploadPath)) {
       fs.mkdirSync(uploadPath, { recursive: true });
     }
@@ -19,7 +16,6 @@ const storage = multer.diskStorage({
     cb(null, uploadPath);
   },
   filename: function (req, file, cb) {
-    // Generate unique filename
     const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
     const fileExtension = path.extname(file.originalname);
     const fileName = file.fieldname + '-' + uniqueSuffix + fileExtension;

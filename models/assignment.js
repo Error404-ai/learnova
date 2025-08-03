@@ -1,4 +1,5 @@
-// Check your models/assignment.js
+const mongoose = require('mongoose');
+
 const assignmentSchema = new mongoose.Schema({
   title: { type: String, required: true },
   description: { type: String, required: true },
@@ -40,3 +41,6 @@ const assignmentSchema = new mongoose.Schema({
 }, {
   timestamps: true
 });
+
+
+module.exports = mongoose.model('assignment', assignmentSchema);
