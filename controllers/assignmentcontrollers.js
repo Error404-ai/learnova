@@ -173,11 +173,71 @@ exports.getClassAssignments = async (req, res) => {
     });
   }
 };
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
 
-// Enhanced createAssignment with better subject association
+// Configure multer for file storage
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadPath = 'uploads/assignments/';
+    
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
+    }
+    
+    cb(null, uploadPath);
+  },
+  filename: function (req, file, cb) {
+    // Generate unique filename
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const fileExtension = path.extname(file.originalname);
+    const fileName = file.fieldname + '-' + uniqueSuffix + fileExtension;
+    cb(null, fileName);
+  }
+});
+
+// File filter to allow only certain file types
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'image/jpeg',
+    'image/png',
+    'image/gif'
+  ];
+  
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only PDF, DOC, DOCX, TXT, and images are allowed.'), false);
+  }
+};
+
+// Configure multer
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+    files: 5 // Maximum 5 files
+  },
+  fileFilter: fileFilter
+});
+
+// Middleware for handling multiple file uploads
+exports.uploadAssignmentFiles = upload.array('attachments', 5);
+
+// Updated createAssignment function
 exports.createAssignment = async (req, res) => {
   try {
-    console.log('Create assignment request:', { body: req.body, user: req.user?.id });
+    console.log('Create assignment request:', { 
+      body: req.body, 
+      files: req.files,
+      user: req.user?.id 
+    });
 
     const {
       title,
@@ -185,11 +245,41 @@ exports.createAssignment = async (req, res) => {
       classId,
       dueDate,
       maxMarks,
-      attachments,
       instructions,
       allowLateSubmission,
       category
     } = req.body;
+
+    // Process uploaded files
+    let attachments = [];
+    if (req.files && req.files.length > 0) {
+      attachments = req.files.map(file => ({
+        filename: file.originalname,
+        path: file.path,
+        size: file.size,
+        mimetype: file.mimetype,
+        uploadedAt: new Date()
+      }));
+    }
+
+    // If attachments are sent as JSON string (from frontend form)
+    if (req.body.attachments && typeof req.body.attachments === 'string') {
+      try {
+        const jsonAttachments = JSON.parse(req.body.attachments);
+        if (Array.isArray(jsonAttachments)) {
+          attachments = [...attachments, ...jsonAttachments];
+        }
+      } catch (e) {
+        console.log('Could not parse attachments JSON:', e.message);
+      }
+    }
+
+    // If attachments are sent as array directly
+    if (req.body.attachments && Array.isArray(req.body.attachments)) {
+      attachments = [...attachments, ...req.body.attachments];
+    }
+
+    console.log('Processed attachments:', attachments);
 
     // Validation
     if (!title?.trim()) {
@@ -292,17 +382,19 @@ exports.createAssignment = async (req, res) => {
     const assignmentData = {
       title: title.trim(),
       description: description.trim(),
-      classId: new mongoose.Types.ObjectId(classId), // Explicit binding to class
+      classId: new mongoose.Types.ObjectId(classId),
       createdBy: new mongoose.Types.ObjectId(userId),
       dueDate: dueDate ? new Date(dueDate) : null,
       maxMarks: maxMarks ? Number(maxMarks) : 100,
-      attachments: Array.isArray(attachments) ? attachments : [],
+      attachments: attachments, // Now properly processed
       instructions: instructions ? instructions.trim() : '',
       allowLateSubmission: Boolean(allowLateSubmission),
       category: category || 'assignment',
       status: 'active',
       submissions: []
     };
+
+    console.log('Creating assignment with data:', assignmentData);
 
     const newAssignment = new Assignment(assignmentData);
     await newAssignment.save();
@@ -350,11 +442,24 @@ exports.createAssignment = async (req, res) => {
       classInfo: {
         className: classObj.className,
         subject: classObj.subject
-      }
+      },
+      attachmentsUploaded: attachments.length
     });
 
   } catch (err) {
     console.error('Error creating assignment:', err);
+    
+    // Clean up uploaded files if assignment creation fails
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (unlinkError) {
+          console.error('Error deleting file:', unlinkError);
+        }
+      });
+    }
+    
     res.status(500).json({
       success: false,
       message: 'Failed to create assignment',

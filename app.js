@@ -6,8 +6,10 @@ const passport = require("passport");
 const session = require('express-session');
 const helmet = require("helmet");
 const bodyParser = require('body-parser');
+const path = require('path');
+const fs = require('fs');
 
-dotenv.config(); 
+dotenv.config();
 
 const app = express();
 
@@ -66,6 +68,22 @@ app.use('/api/auth', authRoutes);
 app.use("/user", userRoutes);
 app.use('/api/class', classRoutes);
 app.use('/api/assign', assignmentRoutes);
+
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
+
+const authMiddleware = require('./middlewares/authMiddleware').protect;
+
+app.get('/api/files/assignments/:filename', authMiddleware, (req, res) => {
+  const filename = req.params.filename;
+  const filePath = path.join(__dirname, 'uploads', 'assignments', filename);
+  if (!fs.existsSync(filePath)) {
+    return res.status(404).json({
+      success: false,
+      message: 'File not found'
+    });
+  }
+  res.sendFile(filePath);
+});
 
 app.get('/', (req, res) => {
   res.json({ message: 'API is running successfully!' });
