@@ -86,11 +86,11 @@ const checkClassPermission = async (classId, userId) => {
 // Enhanced createAssignment function
 exports.createAssignment = async (req, res) => {
   try {
-    console.log('Create assignment request:', { 
-      body: req.body, 
-      files: req.files,
-      user: req.user?.id 
-    });
+    console.log('=== CREATE ASSIGNMENT DEBUG ===');
+    console.log('Request body:', JSON.stringify(req.body, null, 2));
+    console.log('Request files:', req.files);
+    console.log('User from req.user:', req.user);
+    console.log('User ID:', req.user?.id);
 
     const {
       title,
@@ -103,7 +103,6 @@ exports.createAssignment = async (req, res) => {
       category
     } = req.body;
 
-    // Process uploaded files
     let attachments = [];
     if (req.files && req.files.length > 0) {
       attachments = req.files.map(file => ({
@@ -117,142 +116,235 @@ exports.createAssignment = async (req, res) => {
 
     console.log('Processed attachments:', attachments);
 
-    // Validation
-    if (!title?.trim()) {
+    if (!title || typeof title !== 'string' || !title.trim()) {
+      console.log('Title validation failed:', { title, type: typeof title });
       return res.status(400).json({
         success: false,
-        message: 'Title is required and cannot be empty'
+        message: 'Title is required and cannot be empty',
+        debug: { title, titleType: typeof title }
       });
     }
-
-    if (!description?.trim()) {
+    if (!description || typeof description !== 'string' || !description.trim()) {
+      console.log('Description validation failed:', { description, type: typeof description });
       return res.status(400).json({
         success: false,
-        message: 'Description is required and cannot be empty'
+        message: 'Description is required and cannot be empty',
+        debug: { description, descriptionType: typeof description }
       });
     }
-
-    if (!classId?.trim()) {
+    if (!classId || typeof classId !== 'string' || !classId.trim()) {
+      console.log('ClassId validation failed:', { classId, type: typeof classId });
       return res.status(400).json({
         success: false,
-        message: 'Class ID is required'
+        message: 'Class ID is required',
+        debug: { classId, classIdType: typeof classId }
       });
     }
-
     if (!req.user || !req.user.id) {
+      console.log('User validation failed:', { user: req.user });
       return res.status(401).json({
         success: false,
-        message: 'Authentication required - user not found in request'
+        message: 'Authentication required - user not found in request',
+        debug: { user: req.user }
       });
     }
 
     const userId = req.user.id;
+    console.log('Basic validation passed. User ID:', userId);
     if (!isValidObjectId(classId)) {
+      console.log('Invalid ObjectId format:', classId);
       return res.status(400).json({
         success: false,
-        message: 'Invalid class ID format'
+        message: 'Invalid class ID format',
+        debug: { classId, isValid: isValidObjectId(classId) }
       });
     }
 
-    // Get class with full details including subject
-    const classObj = await Class.findById(classId)
-      .populate('createdBy', 'name email')
-      .select('className subject createdBy coordinators students');
+    console.log('ObjectId validation passed');
+    console.log('🔍 Fetching class with ID:', classId);
+    
+    let classObj;
+    try {
+      classObj = await Class.findById(classId)
+        .populate('createdBy', 'name email')
+        .select('className subject createdBy coordinators students');
+      
+      console.log('Class query result:', classObj);
+    } catch (classError) {
+      console.error('Error fetching class:', classError);
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to fetch class information',
+        error: process.env.NODE_ENV === 'development' ? classError.message : 'Database error'
+      });
+    }
 
     if (!classObj) {
+      console.log('Class not found with ID:', classId);
       return res.status(404).json({
         success: false,
-        message: 'Class not found'
+        message: 'Class not found',
+        debug: { classId }
       });
     }
 
-    // Permission check
+    console.log('Class found:', {
+      id: classObj._id,
+      name: classObj.className,
+      subject: classObj.subject,
+      createdBy: classObj.createdBy
+    });
+
     const isCreator = classObj.createdBy._id.toString() === userId.toString();
     const isCoordinator = classObj.coordinators.some(coord => coord.toString() === userId.toString());
 
+    console.log('Permission check:', {
+      userId,
+      classCreator: classObj.createdBy._id.toString(),
+      coordinators: classObj.coordinators.map(c => c.toString()),
+      isCreator,
+      isCoordinator
+    });
+
     if (!isCreator && !isCoordinator) {
+      console.log('Permission denied');
       return res.status(403).json({
         success: false,
-        message: 'Only class creator or coordinators can create assignments'
+        message: 'Only class creator or coordinators can create assignments',
+        debug: { isCreator, isCoordinator, userId }
       });
     }
 
-    // Validate due date
+    console.log('Permissions validated');
+
+    let validatedDueDate = null;
     if (dueDate) {
       const dueDateObj = new Date(dueDate);
+      console.log('Due date validation:', { dueDate, parsed: dueDateObj, isValid: !isNaN(dueDateObj.getTime()) });
+      
       if (isNaN(dueDateObj.getTime())) {
         return res.status(400).json({
           success: false,
-          message: 'Invalid due date format'
+          message: 'Invalid due date format',
+          debug: { dueDate, parsed: dueDateObj }
         });
       }
+      
       if (dueDateObj <= new Date()) {
         return res.status(400).json({
           success: false,
-          message: 'Due date must be in the future'
+          message: 'Due date must be in the future',
+          debug: { dueDate, now: new Date() }
         });
       }
+      
+      validatedDueDate = dueDateObj;
     }
 
-    // Validate marks
-    if (maxMarks !== undefined) {
+    let validatedMaxMarks = 100; 
+    if (maxMarks !== undefined && maxMarks !== null && maxMarks !== '') {
       const marks = Number(maxMarks);
+      console.log('Marks validation:', { maxMarks, parsed: marks, isValid: !isNaN(marks) && marks > 0 });
+      
       if (isNaN(marks) || marks <= 0) {
         return res.status(400).json({
           success: false,
-          message: 'Maximum marks must be a positive number'
+          message: 'Maximum marks must be a positive number',
+          debug: { maxMarks, parsed: marks }
         });
       }
+      validatedMaxMarks = marks;
     }
 
-    // Validate category
     const validCategories = ['assignment', 'quiz', 'project', 'exam', 'homework'];
-    if (category && !validCategories.includes(category)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid category. Must be one of: ' + validCategories.join(', ')
-      });
+    let validatedCategory = 'assignment'; // default
+    if (category) {
+      if (!validCategories.includes(category)) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid category. Must be one of: ' + validCategories.join(', '),
+          debug: { category, validCategories }
+        });
+      }
+      validatedCategory = category;
     }
 
-    // Create assignment with explicit class binding
+    console.log('All validations passed');
     const assignmentData = {
       title: title.trim(),
       description: description.trim(),
       classId: new mongoose.Types.ObjectId(classId),
       createdBy: new mongoose.Types.ObjectId(userId),
-      dueDate: dueDate ? new Date(dueDate) : null,
-      maxMarks: maxMarks ? Number(maxMarks) : 100,
+      dueDate: validatedDueDate,
+      maxMarks: validatedMaxMarks,
       attachments: attachments,
       instructions: instructions ? instructions.trim() : '',
       allowLateSubmission: Boolean(allowLateSubmission),
-      category: category || 'assignment',
+      category: validatedCategory,
       status: 'active',
       submissions: []
     };
 
-    console.log('Creating assignment with data:', assignmentData);
+    console.log('📝 Assignment data prepared:', JSON.stringify(assignmentData, null, 2));
+    let newAssignment;
+    try {
+      console.log('💾 Creating new assignment...');
+      newAssignment = new Assignment(assignmentData);
+      console.log('📄 Assignment instance created, now saving...');
+      
+      await newAssignment.save();
+      console.log('Assignment saved successfully with ID:', newAssignment._id);
+    } catch (saveError) {
+      console.error('Error saving assignment:', saveError);
 
-    const newAssignment = new Assignment(assignmentData);
-    await newAssignment.save();
+      if (req.files && req.files.length > 0) {
+        req.files.forEach(file => {
+          try {
+            fs.unlinkSync(file.path);
+            console.log('🗑️ Cleaned up file:', file.path);
+          } catch (unlinkError) {
+            console.error('Error deleting file:', unlinkError);
+          }
+        });
+      }
+      
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to save assignment to database',
+        error: process.env.NODE_ENV === 'development' ? saveError.message : 'Database save error',
+        debug: {
+          saveError: saveError.message,
+          assignmentData: assignmentData
+        }
+      });
+    }
 
-    // Populate the assignment with class info
-    await newAssignment.populate([
-      { path: 'createdBy', select: 'name email profilePicture' },
-      { path: 'classId', select: 'className subject' }
-    ]);
-
-    // Verify the assignment is properly linked to the class
+    try {
+      console.log('🔗 Populating assignment references...');
+      await newAssignment.populate([
+        { path: 'createdBy', select: 'name email profilePicture' },
+        { path: 'classId', select: 'className subject' }
+      ]);
+      console.log('Population completed');
+    } catch (populateError) {
+      console.error('Population error (non-critical):', populateError);
+    }
     if (!newAssignment.classId || newAssignment.classId._id.toString() !== classId) {
-      console.error('Assignment-Class linking failed:', {
-        assignmentClassId: newAssignment.classId?._id,
+      console.error('Assignment-Class linking verification failed:', {
+        assignmentClassId: newAssignment.classId?._id?.toString(),
         expectedClassId: classId
       });
       return res.status(500).json({
         success: false,
-        message: 'Failed to properly link assignment to class'
+        message: 'Failed to properly link assignment to class',
+        debug: {
+          assignmentClassId: newAssignment.classId?._id?.toString(),
+          expectedClassId: classId
+        }
       });
     }
 
+    console.log('Class linking verified');
     const responseData = {
       _id: newAssignment._id,
       title: newAssignment.title,
@@ -271,6 +363,8 @@ exports.createAssignment = async (req, res) => {
       updatedAt: newAssignment.updatedAt
     };
 
+    console.log('Assignment created successfully!');
+
     res.status(201).json({
       success: true,
       message: `Assignment created successfully for ${classObj.subject} - ${classObj.className}`,
@@ -283,15 +377,19 @@ exports.createAssignment = async (req, res) => {
     });
 
   } catch (err) {
-    console.error('Error creating assignment:', err);
-    
-    // Clean up uploaded files if assignment creation fails
+    console.error('CRITICAL ERROR in createAssignment:', {
+      message: err.message,
+      stack: err.stack,
+      name: err.name
+    });
+
     if (req.files && req.files.length > 0) {
       req.files.forEach(file => {
         try {
           fs.unlinkSync(file.path);
+          console.log('🗑️ Cleaned up file after error:', file.path);
         } catch (unlinkError) {
-          console.error('Error deleting file:', unlinkError);
+          console.error('Error deleting file after error:', unlinkError);
         }
       });
     }
@@ -299,7 +397,11 @@ exports.createAssignment = async (req, res) => {
     res.status(500).json({
       success: false,
       message: 'Failed to create assignment',
-      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+      error: process.env.NODE_ENV === 'development' ? {
+        message: err.message,
+        stack: err.stack,
+        name: err.name
+      } : 'Internal server error'
     });
   }
 };
