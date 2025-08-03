@@ -26,6 +26,155 @@ const checkClassPermission = async (classId, userId) => {
   };
 };
 
+exports.getClassAssignments = async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const { status, category, sortBy, sortOrder, page, limit } = req.query;
+    const userId = req.user?.id;
+
+    console.log('Get class assignments:', { classId, userId, query: req.query });
+
+    if (!classId) {
+      return res.status(400).json({
+        success: false,
+        message: 'Class ID is required'
+      });
+    }
+
+    if (!userId) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required'
+      });
+    }
+
+    // Validate ObjectId format
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid class ID format'
+      });
+    }
+
+    // Check class access and get class details
+    const { hasPermission, error, classObj, isCreator, isCoordinator, isStudent } = 
+      await checkClassPermission(classId, userId);
+
+    if (!hasPermission) {
+      return res.status(error === 'Class not found' ? 404 : 403).json({
+        success: false,
+        message: error || 'Access denied to this class'
+      });
+    }
+
+    // Build query - CRITICAL: Only get assignments for THIS specific class
+    const query = { 
+      classId: new mongoose.Types.ObjectId(classId) // Ensure exact match
+    };
+    
+    // Additional filters
+    if (status) {
+      const validStatuses = ['active', 'inactive', 'draft'];
+      if (validStatuses.includes(status)) {
+        query.status = status;
+      }
+    }
+    
+    if (category) {
+      const validCategories = ['assignment', 'quiz', 'project', 'exam', 'homework'];
+      if (validCategories.includes(category)) {
+        query.category = category;
+      }
+    }
+
+    // Pagination
+    const pageNumber = Math.max(1, parseInt(page) || 1);
+    const limitNumber = Math.min(50, Math.max(1, parseInt(limit) || 10));
+    const skip = (pageNumber - 1) * limitNumber;
+
+    // Sorting
+    let sortOptions = { createdAt: -1 }; // default sort
+    if (sortBy) {
+      const validSortFields = ['createdAt', 'dueDate', 'title', 'maxMarks'];
+      if (validSortFields.includes(sortBy)) {
+        const order = sortOrder === 'asc' ? 1 : -1;
+        sortOptions = { [sortBy]: order };
+      }
+    }
+
+    // Get total count for pagination
+    const totalCount = await Assignment.countDocuments(query);
+    const totalPages = Math.ceil(totalCount / limitNumber);
+
+    // Fetch assignments with explicit class verification
+    const assignments = await Assignment.find(query)
+      .populate('createdBy', 'name email profilePicture')
+      .populate({
+        path: 'classId',
+        select: 'className subject createdBy',
+        match: { _id: new mongoose.Types.ObjectId(classId) } // Double-check class match
+      })
+      .sort(sortOptions)
+      .skip(skip)
+      .limit(limitNumber)
+      .lean();
+
+    // Filter out any assignments where classId didn't match (extra safety)
+    const validAssignments = assignments.filter(assignment => 
+      assignment.classId && assignment.classId._id.toString() === classId
+    );
+
+    // Process assignments with user-specific data
+    const assignmentsWithStatus = validAssignments.map(assignment => {
+      const userSubmission = assignment.submissions?.find(
+        sub => sub.studentId?.toString() === userId
+      );
+
+      return {
+        ...assignment,
+        hasSubmitted: !!userSubmission,
+        userSubmission: isStudent ? userSubmission : undefined,
+        submissionsCount: assignment.submissions?.length || 0,
+        isOverdue: assignment.dueDate && new Date() > new Date(assignment.dueDate),
+        isCreator: assignment.createdBy._id.toString() === userId,
+        canEdit: isCreator || isCoordinator || assignment.createdBy._id.toString() === userId,
+        canDelete: assignment.createdBy._id.toString() === userId,
+        // Add subject info for verification
+        subject: assignment.classId.subject,
+        className: assignment.classId.className
+      };
+    });
+
+    res.status(200).json({
+      success: true,
+      assignments: assignmentsWithStatus,
+      pagination: {
+        currentPage: pageNumber,
+        totalPages,
+        totalCount: validAssignments.length, // Use filtered count
+        hasNext: pageNumber < totalPages,
+        hasPrev: pageNumber > 1,
+        limit: limitNumber
+      },
+      classInfo: {
+        _id: classObj._id,
+        className: classObj.className,
+        subject: classObj.subject
+      },
+      userRole: isCreator ? 'creator' : isCoordinator ? 'coordinator' : 'student'
+    });
+
+  } catch (err) {
+    console.error('Error fetching assignments:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch assignments',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+  }
+};
+
+// Enhanced createAssignment with better subject association
 exports.createAssignment = async (req, res) => {
   try {
     console.log('Create assignment request:', { body: req.body, user: req.user?.id });
@@ -42,6 +191,7 @@ exports.createAssignment = async (req, res) => {
       category
     } = req.body;
 
+    // Validation
     if (!title?.trim()) {
       return res.status(400).json({
         success: false,
@@ -78,7 +228,11 @@ exports.createAssignment = async (req, res) => {
       });
     }
 
-    const classObj = await Class.findById(classId);
+    // Get class with full details including subject
+    const classObj = await Class.findById(classId)
+      .populate('createdBy', 'name email')
+      .select('className subject createdBy coordinators students');
+
     if (!classObj) {
       return res.status(404).json({
         success: false,
@@ -86,7 +240,8 @@ exports.createAssignment = async (req, res) => {
       });
     }
 
-    const isCreator = classObj.createdBy.toString() === userId.toString();
+    // Permission check
+    const isCreator = classObj.createdBy._id.toString() === userId.toString();
     const isCoordinator = classObj.coordinators.some(coord => coord.toString() === userId.toString());
 
     if (!isCreator && !isCoordinator) {
@@ -96,6 +251,7 @@ exports.createAssignment = async (req, res) => {
       });
     }
 
+    // Validate due date
     if (dueDate) {
       const dueDateObj = new Date(dueDate);
       if (isNaN(dueDateObj.getTime())) {
@@ -111,6 +267,8 @@ exports.createAssignment = async (req, res) => {
         });
       }
     }
+
+    // Validate marks
     if (maxMarks !== undefined) {
       const marks = Number(maxMarks);
       if (isNaN(marks) || marks <= 0) {
@@ -121,6 +279,7 @@ exports.createAssignment = async (req, res) => {
       }
     }
 
+    // Validate category
     const validCategories = ['assignment', 'quiz', 'project', 'exam', 'homework'];
     if (category && !validCategories.includes(category)) {
       return res.status(400).json({
@@ -129,11 +288,11 @@ exports.createAssignment = async (req, res) => {
       });
     }
 
-    // Create assignment
+    // Create assignment with explicit class binding
     const assignmentData = {
       title: title.trim(),
       description: description.trim(),
-      classId: new mongoose.Types.ObjectId(classId),
+      classId: new mongoose.Types.ObjectId(classId), // Explicit binding to class
       createdBy: new mongoose.Types.ObjectId(userId),
       dueDate: dueDate ? new Date(dueDate) : null,
       maxMarks: maxMarks ? Number(maxMarks) : 100,
@@ -148,11 +307,23 @@ exports.createAssignment = async (req, res) => {
     const newAssignment = new Assignment(assignmentData);
     await newAssignment.save();
 
-    // Populate the assignment
+    // Populate the assignment with class info
     await newAssignment.populate([
       { path: 'createdBy', select: 'name email profilePicture' },
       { path: 'classId', select: 'className subject' }
     ]);
+
+    // Verify the assignment is properly linked to the class
+    if (!newAssignment.classId || newAssignment.classId._id.toString() !== classId) {
+      console.error('Assignment-Class linking failed:', {
+        assignmentClassId: newAssignment.classId?._id,
+        expectedClassId: classId
+      });
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to properly link assignment to class'
+      });
+    }
 
     const responseData = {
       _id: newAssignment._id,
@@ -174,8 +345,12 @@ exports.createAssignment = async (req, res) => {
 
     res.status(201).json({
       success: true,
-      message: 'Assignment created successfully',
-      assignment: responseData
+      message: `Assignment created successfully for ${classObj.subject} - ${classObj.className}`,
+      assignment: responseData,
+      classInfo: {
+        className: classObj.className,
+        subject: classObj.subject
+      }
     });
 
   } catch (err) {
@@ -188,20 +363,11 @@ exports.createAssignment = async (req, res) => {
   }
 };
 
-exports.getClassAssignments = async (req, res) => {
+// Helper function to get assignments by subject
+exports.getAssignmentsBySubject = async (req, res) => {
   try {
-    const { classId } = req.params;
-    const { status, category, sortBy, sortOrder, page, limit } = req.query;
+    const { subject } = req.params;
     const userId = req.user?.id;
-
-    console.log('Get class assignments:', { classId, userId, query: req.query });
-
-    if (!classId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Class ID is required'
-      });
-    }
 
     if (!userId) {
       return res.status(401).json({
@@ -210,209 +376,68 @@ exports.getClassAssignments = async (req, res) => {
       });
     }
 
-    // Validate ObjectId format
-    if (!isValidObjectId(classId)) {
+    if (!subject?.trim()) {
       return res.status(400).json({
         success: false,
-        message: 'Invalid class ID format'
+        message: 'Subject is required'
       });
     }
 
-    // Check class access
-    const { hasPermission, error, classObj, isCreator, isCoordinator, isStudent } = 
-      await checkClassPermission(classId, userId);
+    // Find all classes for this subject that user has access to
+    const userClasses = await Class.find({
+      subject: subject.trim(),
+      $or: [
+        { createdBy: userId },
+        { coordinators: userId },
+        { students: userId }
+      ]
+    }).select('_id className');
 
-    if (!hasPermission) {
-      return res.status(error === 'Class not found' ? 404 : 403).json({
-        success: false,
-        message: error || 'Access denied to this class'
-      });
-    }
-
-    // Build query
-    const query = { classId: new mongoose.Types.ObjectId(classId) };
-    
-    if (status) {
-      const validStatuses = ['active', 'inactive', 'draft'];
-      if (validStatuses.includes(status)) {
-        query.status = status;
-      }
-    }
-    
-    if (category) {
-      const validCategories = ['assignment', 'quiz', 'project', 'exam', 'homework'];
-      if (validCategories.includes(category)) {
-        query.category = category;
-      }
-    }
-
-    // Pagination
-    const pageNumber = Math.max(1, parseInt(page) || 1);
-    const limitNumber = Math.min(50, Math.max(1, parseInt(limit) || 10));
-    const skip = (pageNumber - 1) * limitNumber;
-
-    // Sorting
-    let sortOptions = { createdAt: -1 }; // default sort
-    if (sortBy) {
-      const validSortFields = ['createdAt', 'dueDate', 'title', 'maxMarks'];
-      if (validSortFields.includes(sortBy)) {
-        const order = sortOrder === 'asc' ? 1 : -1;
-        sortOptions = { [sortBy]: order };
-      }
-    }
-
-    // Get total count for pagination
-    const totalCount = await Assignment.countDocuments(query);
-    const totalPages = Math.ceil(totalCount / limitNumber);
-
-    // Fetch assignments
-    const assignments = await Assignment.find(query)
-      .populate('createdBy', 'name email profilePicture')
-      .populate('classId', 'className subject')
-      .sort(sortOptions)
-      .skip(skip)
-      .limit(limitNumber)
-      .lean();
-
-    // Process assignments with user-specific data
-    const assignmentsWithStatus = assignments.map(assignment => {
-      const userSubmission = assignment.submissions?.find(
-        sub => sub.studentId?.toString() === userId
-      );
-
-      return {
-        ...assignment,
-        hasSubmitted: !!userSubmission,
-        userSubmission: isStudent ? userSubmission : undefined,
-        submissionsCount: assignment.submissions?.length || 0,
-        isOverdue: assignment.dueDate && new Date() > new Date(assignment.dueDate),
-        isCreator: assignment.createdBy._id.toString() === userId,
-        canEdit: isCreator || isCoordinator || assignment.createdBy._id.toString() === userId,
-        canDelete: assignment.createdBy._id.toString() === userId
-      };
-    });
-
-    res.status(200).json({
-      success: true,
-      assignments: assignmentsWithStatus,
-      pagination: {
-        currentPage: pageNumber,
-        totalPages,
-        totalCount,
-        hasNext: pageNumber < totalPages,
-        hasPrev: pageNumber > 1,
-        limit: limitNumber
-      },
-      className: classObj.className,
-      userRole: isCreator ? 'creator' : isCoordinator ? 'coordinator' : 'student'
-    });
-
-  } catch (err) {
-    console.error('Error fetching assignments:', err);
-    res.status(500).json({
-      success: false,
-      message: 'Failed to fetch assignments',
-      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
-    });
-  }
-};
-
-exports.getAssignmentById = async (req, res) => {
-  try {
-    const { assignmentId } = req.params;
-    const userId = req.user?.id;
-
-    console.log('Get assignment by ID:', { assignmentId, userId });
-
-    if (!assignmentId) {
-      return res.status(400).json({
-        success: false,
-        message: 'Assignment ID is required'
-      });
-    }
-
-    if (!userId) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required'
-      });
-    }
-
-    // Validate ObjectId format
-    if (!isValidObjectId(assignmentId)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid Assignment ID format'
-      });
-    }
-
-    // Fetch assignment with populated data
-    const assignment = await Assignment.findById(assignmentId)
-      .populate('createdBy', 'name email profilePicture')
-      .populate('classId', 'className subject createdBy students coordinators')
-      .populate('submissions.studentId', 'name email profilePicture')
-      .lean();
-
-    if (!assignment) {
+    if (!userClasses.length) {
       return res.status(404).json({
         success: false,
-        message: 'Assignment not found'
+        message: 'No classes found for this subject or access denied'
       });
     }
 
-    // Check access permissions
-    const classObj = assignment.classId;
-    const isCreator = classObj.createdBy.toString() === userId;
-    const isCoordinator = classObj.coordinators.some(coord => coord.toString() === userId);
-    const isStudent = classObj.students.some(student => student.toString() === userId);
-    const isAssignmentCreator = assignment.createdBy._id.toString() === userId;
+    const classIds = userClasses.map(cls => cls._id);
 
-    if (!isCreator && !isCoordinator && !isStudent) {
-      return res.status(403).json({
-        success: false,
-        message: 'Access denied to this assignment'
-      });
-    }
+    // Get all assignments for these classes
+    const assignments = await Assignment.find({
+      classId: { $in: classIds },
+      status: 'active'
+    })
+      .populate('createdBy', 'name email')
+      .populate('classId', 'className subject')
+      .sort({ createdAt: -1 })
+      .lean();
 
-    // Find user's submission
-    const userSubmission = assignment.submissions?.find(
-      sub => sub.studentId?._id?.toString() === userId
-    );
-
-    // Prepare response data based on user role
-    const responseData = {
-      ...assignment,
-      hasSubmitted: !!userSubmission,
-      userSubmission: isStudent ? userSubmission : undefined,
-      submissionsCount: assignment.submissions?.length || 0,
-      isOverdue: assignment.dueDate && new Date() > new Date(assignment.dueDate),
-      isCreator: isAssignmentCreator,
-      canEdit: isCreator || isCoordinator || isAssignmentCreator,
-      canDelete: isAssignmentCreator,
-      canViewAllSubmissions: isCreator || isCoordinator || isAssignmentCreator,
-      userRole: isCreator ? 'creator' : isCoordinator ? 'coordinator' : 'student'
-    };
-
-    // Hide sensitive data for students
-    if (isStudent && !isCreator && !isCoordinator) {
-      // Students can only see their own submission details
-      responseData.submissions = userSubmission ? [userSubmission] : [];
-    }
+    // Group assignments by class
+    const assignmentsByClass = userClasses.map(cls => ({
+      classId: cls._id,
+      className: cls.className,
+      assignments: assignments.filter(assignment => 
+        assignment.classId._id.toString() === cls._id.toString()
+      )
+    }));
 
     res.status(200).json({
       success: true,
-      assignment: responseData
+      subject,
+      classes: assignmentsByClass,
+      totalAssignments: assignments.length
     });
 
   } catch (err) {
-    console.error('Error fetching assignment:', err);
+    console.error('Error fetching assignments by subject:', err);
     res.status(500).json({
       success: false,
-      message: 'Failed to fetch assignment details',
+      message: 'Failed to fetch assignments by subject',
       error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
     });
   }
 };
+
 
 exports.updateAssignment = async (req, res) => {
   try {

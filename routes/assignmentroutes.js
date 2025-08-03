@@ -4,20 +4,20 @@ const { protect } = require('../middlewares/authMiddleware');
 const {
   createAssignment,
   getClassAssignments,
-  getAssignmentById,
   updateAssignment,
   deleteAssignment,
   getAssignmentStats,
   submitAssignment,
   getAssignmentSubmissions,
   gradeSubmission,
+  getAssignmentsBySubject, 
 } = require('../controllers/assignmentcontrollers');
 
 router.use(protect);
 
 router.post('/', createAssignment);
-router.get('/class/:classId', getClassAssignments);
-router.get('/:assignmentId', getAssignmentById);
+router.get('/class/:classId', getClassAssignments); 
+router.get('/subject/:subject', getAssignmentsBySubject); 
 router.put('/:assignmentId', updateAssignment);
 router.delete('/:assignmentId', deleteAssignment);
 router.get('/:assignmentId/stats', getAssignmentStats);
