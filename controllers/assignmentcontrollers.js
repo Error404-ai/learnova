@@ -1,6 +1,63 @@
 const Assignment = require('../models/assignment');
 const Class = require('../models/Class');
 const mongoose = require('mongoose');
+const multer = require('multer');
+const path = require('path');
+const fs = require('fs');
+
+// Move multer configuration to the top
+// Configure multer for file storage
+const storage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadPath = 'uploads/assignments/';
+    
+    // Create directory if it doesn't exist
+    if (!fs.existsSync(uploadPath)) {
+      fs.mkdirSync(uploadPath, { recursive: true });
+    }
+    
+    cb(null, uploadPath);
+  },
+  filename: function (req, file, cb) {
+    // Generate unique filename
+    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
+    const fileExtension = path.extname(file.originalname);
+    const fileName = file.fieldname + '-' + uniqueSuffix + fileExtension;
+    cb(null, fileName);
+  }
+});
+
+// File filter to allow only certain file types
+const fileFilter = (req, file, cb) => {
+  const allowedTypes = [
+    'application/pdf',
+    'application/msword',
+    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
+    'text/plain',
+    'image/jpeg',
+    'image/png',
+    'image/gif'
+  ];
+  
+  if (allowedTypes.includes(file.mimetype)) {
+    cb(null, true);
+  } else {
+    cb(new Error('Invalid file type. Only PDF, DOC, DOCX, TXT, and images are allowed.'), false);
+  }
+};
+
+// Configure multer
+const upload = multer({
+  storage: storage,
+  limits: {
+    fileSize: 10 * 1024 * 1024, // 10MB limit
+    files: 5 // Maximum 5 files
+  },
+  fileFilter: fileFilter
+});
+
+// Middleware for handling multiple file uploads - EXPORT EARLY
+exports.uploadAssignmentFiles = upload.array('attachments', 5);
 
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id) && /^[0-9a-fA-F]{24}$/.test(id);
@@ -24,6 +81,227 @@ const checkClassPermission = async (classId, userId) => {
     isCoordinator,
     isStudent
   };
+};
+
+// Enhanced createAssignment function
+exports.createAssignment = async (req, res) => {
+  try {
+    console.log('Create assignment request:', { 
+      body: req.body, 
+      files: req.files,
+      user: req.user?.id 
+    });
+
+    const {
+      title,
+      description,
+      classId,
+      dueDate,
+      maxMarks,
+      instructions,
+      allowLateSubmission,
+      category
+    } = req.body;
+
+    // Process uploaded files
+    let attachments = [];
+    if (req.files && req.files.length > 0) {
+      attachments = req.files.map(file => ({
+        filename: file.originalname,
+        path: file.path,
+        size: file.size,
+        mimetype: file.mimetype,
+        uploadedAt: new Date()
+      }));
+    }
+
+    console.log('Processed attachments:', attachments);
+
+    // Validation
+    if (!title?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Title is required and cannot be empty'
+      });
+    }
+
+    if (!description?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Description is required and cannot be empty'
+      });
+    }
+
+    if (!classId?.trim()) {
+      return res.status(400).json({
+        success: false,
+        message: 'Class ID is required'
+      });
+    }
+
+    if (!req.user || !req.user.id) {
+      return res.status(401).json({
+        success: false,
+        message: 'Authentication required - user not found in request'
+      });
+    }
+
+    const userId = req.user.id;
+    if (!isValidObjectId(classId)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid class ID format'
+      });
+    }
+
+    // Get class with full details including subject
+    const classObj = await Class.findById(classId)
+      .populate('createdBy', 'name email')
+      .select('className subject createdBy coordinators students');
+
+    if (!classObj) {
+      return res.status(404).json({
+        success: false,
+        message: 'Class not found'
+      });
+    }
+
+    // Permission check
+    const isCreator = classObj.createdBy._id.toString() === userId.toString();
+    const isCoordinator = classObj.coordinators.some(coord => coord.toString() === userId.toString());
+
+    if (!isCreator && !isCoordinator) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only class creator or coordinators can create assignments'
+      });
+    }
+
+    // Validate due date
+    if (dueDate) {
+      const dueDateObj = new Date(dueDate);
+      if (isNaN(dueDateObj.getTime())) {
+        return res.status(400).json({
+          success: false,
+          message: 'Invalid due date format'
+        });
+      }
+      if (dueDateObj <= new Date()) {
+        return res.status(400).json({
+          success: false,
+          message: 'Due date must be in the future'
+        });
+      }
+    }
+
+    // Validate marks
+    if (maxMarks !== undefined) {
+      const marks = Number(maxMarks);
+      if (isNaN(marks) || marks <= 0) {
+        return res.status(400).json({
+          success: false,
+          message: 'Maximum marks must be a positive number'
+        });
+      }
+    }
+
+    // Validate category
+    const validCategories = ['assignment', 'quiz', 'project', 'exam', 'homework'];
+    if (category && !validCategories.includes(category)) {
+      return res.status(400).json({
+        success: false,
+        message: 'Invalid category. Must be one of: ' + validCategories.join(', ')
+      });
+    }
+
+    // Create assignment with explicit class binding
+    const assignmentData = {
+      title: title.trim(),
+      description: description.trim(),
+      classId: new mongoose.Types.ObjectId(classId),
+      createdBy: new mongoose.Types.ObjectId(userId),
+      dueDate: dueDate ? new Date(dueDate) : null,
+      maxMarks: maxMarks ? Number(maxMarks) : 100,
+      attachments: attachments,
+      instructions: instructions ? instructions.trim() : '',
+      allowLateSubmission: Boolean(allowLateSubmission),
+      category: category || 'assignment',
+      status: 'active',
+      submissions: []
+    };
+
+    console.log('Creating assignment with data:', assignmentData);
+
+    const newAssignment = new Assignment(assignmentData);
+    await newAssignment.save();
+
+    // Populate the assignment with class info
+    await newAssignment.populate([
+      { path: 'createdBy', select: 'name email profilePicture' },
+      { path: 'classId', select: 'className subject' }
+    ]);
+
+    // Verify the assignment is properly linked to the class
+    if (!newAssignment.classId || newAssignment.classId._id.toString() !== classId) {
+      console.error('Assignment-Class linking failed:', {
+        assignmentClassId: newAssignment.classId?._id,
+        expectedClassId: classId
+      });
+      return res.status(500).json({
+        success: false,
+        message: 'Failed to properly link assignment to class'
+      });
+    }
+
+    const responseData = {
+      _id: newAssignment._id,
+      title: newAssignment.title,
+      description: newAssignment.description,
+      classId: newAssignment.classId,
+      createdBy: newAssignment.createdBy,
+      dueDate: newAssignment.dueDate,
+      maxMarks: newAssignment.maxMarks,
+      attachments: newAssignment.attachments,
+      instructions: newAssignment.instructions,
+      allowLateSubmission: newAssignment.allowLateSubmission,
+      category: newAssignment.category,
+      status: newAssignment.status,
+      submissionsCount: 0,
+      createdAt: newAssignment.createdAt,
+      updatedAt: newAssignment.updatedAt
+    };
+
+    res.status(201).json({
+      success: true,
+      message: `Assignment created successfully for ${classObj.subject} - ${classObj.className}`,
+      assignment: responseData,
+      classInfo: {
+        className: classObj.className,
+        subject: classObj.subject
+      },
+      attachmentsUploaded: attachments.length
+    });
+
+  } catch (err) {
+    console.error('Error creating assignment:', err);
+    
+    // Clean up uploaded files if assignment creation fails
+    if (req.files && req.files.length > 0) {
+      req.files.forEach(file => {
+        try {
+          fs.unlinkSync(file.path);
+        } catch (unlinkError) {
+          console.error('Error deleting file:', unlinkError);
+        }
+      });
+    }
+    
+    res.status(500).json({
+      success: false,
+      message: 'Failed to create assignment',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+  }
 };
 
 exports.getClassAssignments = async (req, res) => {
@@ -173,300 +451,6 @@ exports.getClassAssignments = async (req, res) => {
     });
   }
 };
-const multer = require('multer');
-const path = require('path');
-const fs = require('fs');
-
-// Configure multer for file storage
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadPath = 'uploads/assignments/';
-    
-    // Create directory if it doesn't exist
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath, { recursive: true });
-    }
-    
-    cb(null, uploadPath);
-  },
-  filename: function (req, file, cb) {
-    // Generate unique filename
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const fileExtension = path.extname(file.originalname);
-    const fileName = file.fieldname + '-' + uniqueSuffix + fileExtension;
-    cb(null, fileName);
-  }
-});
-
-// File filter to allow only certain file types
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain',
-    'image/jpeg',
-    'image/png',
-    'image/gif'
-  ];
-  
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only PDF, DOC, DOCX, TXT, and images are allowed.'), false);
-  }
-};
-
-// Configure multer
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
-    files: 5 // Maximum 5 files
-  },
-  fileFilter: fileFilter
-});
-
-// Middleware for handling multiple file uploads
-exports.uploadAssignmentFiles = upload.array('attachments', 5);
-
-// Updated createAssignment function
-exports.createAssignment = async (req, res) => {
-  try {
-    console.log('Create assignment request:', { 
-      body: req.body, 
-      files: req.files,
-      user: req.user?.id 
-    });
-
-    const {
-      title,
-      description,
-      classId,
-      dueDate,
-      maxMarks,
-      instructions,
-      allowLateSubmission,
-      category
-    } = req.body;
-
-    // Process uploaded files
-    let attachments = [];
-    if (req.files && req.files.length > 0) {
-      attachments = req.files.map(file => ({
-        filename: file.originalname,
-        path: file.path,
-        size: file.size,
-        mimetype: file.mimetype,
-        uploadedAt: new Date()
-      }));
-    }
-
-    // If attachments are sent as JSON string (from frontend form)
-    if (req.body.attachments && typeof req.body.attachments === 'string') {
-      try {
-        const jsonAttachments = JSON.parse(req.body.attachments);
-        if (Array.isArray(jsonAttachments)) {
-          attachments = [...attachments, ...jsonAttachments];
-        }
-      } catch (e) {
-        console.log('Could not parse attachments JSON:', e.message);
-      }
-    }
-
-    // If attachments are sent as array directly
-    if (req.body.attachments && Array.isArray(req.body.attachments)) {
-      attachments = [...attachments, ...req.body.attachments];
-    }
-
-    console.log('Processed attachments:', attachments);
-
-    // Validation
-    if (!title?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Title is required and cannot be empty'
-      });
-    }
-
-    if (!description?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Description is required and cannot be empty'
-      });
-    }
-
-    if (!classId?.trim()) {
-      return res.status(400).json({
-        success: false,
-        message: 'Class ID is required'
-      });
-    }
-
-    if (!req.user || !req.user.id) {
-      return res.status(401).json({
-        success: false,
-        message: 'Authentication required - user not found in request'
-      });
-    }
-
-    const userId = req.user.id;
-    if (!isValidObjectId(classId)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid class ID format'
-      });
-    }
-
-    // Get class with full details including subject
-    const classObj = await Class.findById(classId)
-      .populate('createdBy', 'name email')
-      .select('className subject createdBy coordinators students');
-
-    if (!classObj) {
-      return res.status(404).json({
-        success: false,
-        message: 'Class not found'
-      });
-    }
-
-    // Permission check
-    const isCreator = classObj.createdBy._id.toString() === userId.toString();
-    const isCoordinator = classObj.coordinators.some(coord => coord.toString() === userId.toString());
-
-    if (!isCreator && !isCoordinator) {
-      return res.status(403).json({
-        success: false,
-        message: 'Only class creator or coordinators can create assignments'
-      });
-    }
-
-    // Validate due date
-    if (dueDate) {
-      const dueDateObj = new Date(dueDate);
-      if (isNaN(dueDateObj.getTime())) {
-        return res.status(400).json({
-          success: false,
-          message: 'Invalid due date format'
-        });
-      }
-      if (dueDateObj <= new Date()) {
-        return res.status(400).json({
-          success: false,
-          message: 'Due date must be in the future'
-        });
-      }
-    }
-
-    // Validate marks
-    if (maxMarks !== undefined) {
-      const marks = Number(maxMarks);
-      if (isNaN(marks) || marks <= 0) {
-        return res.status(400).json({
-          success: false,
-          message: 'Maximum marks must be a positive number'
-        });
-      }
-    }
-
-    // Validate category
-    const validCategories = ['assignment', 'quiz', 'project', 'exam', 'homework'];
-    if (category && !validCategories.includes(category)) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid category. Must be one of: ' + validCategories.join(', ')
-      });
-    }
-
-    // Create assignment with explicit class binding
-    const assignmentData = {
-      title: title.trim(),
-      description: description.trim(),
-      classId: new mongoose.Types.ObjectId(classId),
-      createdBy: new mongoose.Types.ObjectId(userId),
-      dueDate: dueDate ? new Date(dueDate) : null,
-      maxMarks: maxMarks ? Number(maxMarks) : 100,
-      attachments: attachments, // Now properly processed
-      instructions: instructions ? instructions.trim() : '',
-      allowLateSubmission: Boolean(allowLateSubmission),
-      category: category || 'assignment',
-      status: 'active',
-      submissions: []
-    };
-
-    console.log('Creating assignment with data:', assignmentData);
-
-    const newAssignment = new Assignment(assignmentData);
-    await newAssignment.save();
-
-    // Populate the assignment with class info
-    await newAssignment.populate([
-      { path: 'createdBy', select: 'name email profilePicture' },
-      { path: 'classId', select: 'className subject' }
-    ]);
-
-    // Verify the assignment is properly linked to the class
-    if (!newAssignment.classId || newAssignment.classId._id.toString() !== classId) {
-      console.error('Assignment-Class linking failed:', {
-        assignmentClassId: newAssignment.classId?._id,
-        expectedClassId: classId
-      });
-      return res.status(500).json({
-        success: false,
-        message: 'Failed to properly link assignment to class'
-      });
-    }
-
-    const responseData = {
-      _id: newAssignment._id,
-      title: newAssignment.title,
-      description: newAssignment.description,
-      classId: newAssignment.classId,
-      createdBy: newAssignment.createdBy,
-      dueDate: newAssignment.dueDate,
-      maxMarks: newAssignment.maxMarks,
-      attachments: newAssignment.attachments,
-      instructions: newAssignment.instructions,
-      allowLateSubmission: newAssignment.allowLateSubmission,
-      category: newAssignment.category,
-      status: newAssignment.status,
-      submissionsCount: 0,
-      createdAt: newAssignment.createdAt,
-      updatedAt: newAssignment.updatedAt
-    };
-
-    res.status(201).json({
-      success: true,
-      message: `Assignment created successfully for ${classObj.subject} - ${classObj.className}`,
-      assignment: responseData,
-      classInfo: {
-        className: classObj.className,
-        subject: classObj.subject
-      },
-      attachmentsUploaded: attachments.length
-    });
-
-  } catch (err) {
-    console.error('Error creating assignment:', err);
-    
-    // Clean up uploaded files if assignment creation fails
-    if (req.files && req.files.length > 0) {
-      req.files.forEach(file => {
-        try {
-          fs.unlinkSync(file.path);
-        } catch (unlinkError) {
-          console.error('Error deleting file:', unlinkError);
-        }
-      });
-    }
-    
-    res.status(500).json({
-      success: false,
-      message: 'Failed to create assignment',
-      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
-    });
-  }
-};
 
 // Helper function to get assignments by subject
 exports.getAssignmentsBySubject = async (req, res) => {
@@ -542,7 +526,6 @@ exports.getAssignmentsBySubject = async (req, res) => {
     });
   }
 };
-
 
 exports.updateAssignment = async (req, res) => {
   try {
@@ -873,6 +856,7 @@ exports.getAssignmentStats = async (req, res) => {
     });
   }
 };
+
 // Submit Assignment (for students)
 exports.submitAssignment = async (req, res) => {
   try {
@@ -1216,11 +1200,11 @@ exports.gradeSubmission = async (req, res) => {
     });
 
   } catch (err) {
-      console.error('Error grading submission:', err);
-      res.status(500).json({
-        success: false,
-        message: 'Failed to grade submission',
-        error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
-      });
-    }
-  };
+    console.error('Error grading submission:', err);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to grade submission',
+      error: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error'
+    });
+  }
+};
