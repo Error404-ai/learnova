@@ -14,36 +14,38 @@ const app = express();
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
-  'https://learnova-one.vercel.app/',
-  process.env.FRONTEND_URL
-].filter(Boolean); 
+  'https://learnova-one.vercel.app',
+].filter(Boolean);
 
 app.use(cors({
   origin: function (origin, callback) {
     if (!origin) return callback(null, true);
-
     if (allowedOrigins.includes(origin)) {
       return callback(null, true);
     } else {
-      console.error(`CORS blocked request from: ${origin}`);
       return callback(new Error('Not allowed by CORS'));
     }
   },
+  credentials: true,
   methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization'],
-  credentials: true
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
-app.options('*', cors());
+
+app.options('*', (req, res) => {
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
+});
 
 app.use(express.json());
 app.use(express.urlencoded({ extended: true }));
-app.use(bodyParser.json()); 
+app.use(bodyParser.json());
 
-app.use(
-  helmet({
-    crossOriginOpenerPolicy: false,
-  })
-);
+app.use(helmet({
+  crossOriginOpenerPolicy: false,
+}));
 
 app.use(session({
   resave: false,
@@ -51,17 +53,15 @@ app.use(session({
   secret: process.env.SESSION_SECRET || 'fallback-secret-key'
 }));
 
-require("./config/passport"); 
+require("./config/passport");
 app.use(passport.initialize());
 app.use(passport.session());
-
 
 const authRoutes = require('./routes/auth');
 const userRoutes = require("./routes/userroutes");
 const classRoutes = require('./routes/classroutes');
 const assignmentRoutes = require('./routes/assignmentroutes');
 
-// API Routes
 app.use('/api/auth', authRoutes);
 app.use("/user", userRoutes);
 app.use('/api/class', classRoutes);
@@ -84,7 +84,6 @@ app.use((err, req, res, next) => {
 });
 
 app.use((err, req, res, next) => {
-  console.error('Error:', err);
   res.status(500).json({
     success: false,
     message: 'Internal server error'
@@ -94,8 +93,6 @@ app.use((err, req, res, next) => {
 (async () => {
   try {
     await mongoose.connect(process.env.MONGO_URI);
-    console.log('MongoDB connected successfully');
-
     const PORT = process.env.PORT || 5000;
     app.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
