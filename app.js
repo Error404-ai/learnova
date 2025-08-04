@@ -56,13 +56,7 @@ app.use(session({
 require("./config/passport");
 app.use(passport.initialize());
 app.use(passport.session());
-app.use('/uploads', express.static(path.join(__dirname, 'uploads'), {
-  setHeaders: (res, path) => {
-    res.setHeader('Access-Control-Allow-Origin', '*');
-    res.setHeader('Access-Control-Allow-Methods', 'GET');
-    res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  }
-}));
+app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
 
 const authRoutes = require('./routes/auth');
 const userRoutes = require("./routes/userroutes");
