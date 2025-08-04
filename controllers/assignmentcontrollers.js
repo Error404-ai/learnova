@@ -23,7 +23,6 @@ const storage = multer.diskStorage({
   }
 });
 
-// File filter to allow only certain file types
 const fileFilter = (req, file, cb) => {
   const allowedTypes = [
     'application/pdf',
