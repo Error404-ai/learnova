@@ -56,61 +56,7 @@ app.use(session({
 require("./config/passport");
 app.use(passport.initialize());
 app.use(passport.session());
-
 app.use('/uploads', express.static(path.join(__dirname, 'uploads')));
-
-const authMiddleware = require('./middlewares/authMiddleware').protect;
-
-app.get('/api/files/assignments/:filename', authMiddleware, (req, res) => {
-  try {
-    const filename = req.params.filename;
-
-    if (filename.includes('..') || filename.includes('/') || filename.includes('\\')) {
-      return res.status(400).json({
-        success: false,
-        message: 'Invalid filename'
-      });
-    }
-
-    const filePath = path.join(__dirname, 'uploads', 'assignments', filename);
-
-    if (!fs.existsSync(filePath)) {
-      return res.status(404).json({
-        success: false,
-        message: 'File not found'
-      });
-    }
-
-    const stats = fs.statSync(filePath);
-    const ext = path.extname(filename).toLowerCase();
-
-    const mimeTypes = {
-      '.pdf': 'application/pdf',
-      '.doc': 'application/msword',
-      '.docx': 'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-      '.txt': 'text/plain',
-      '.jpg': 'image/jpeg',
-      '.jpeg': 'image/jpeg',
-      '.png': 'image/png',
-      '.gif': 'image/gif'
-    };
-
-    const mimeType = mimeTypes[ext] || 'application/octet-stream';
-
-    res.setHeader('Content-Type', mimeType);
-    res.setHeader('Content-Length', stats.size);
-    res.setHeader('Content-Disposition', `inline; filename="${filename}"`);
-
-    res.sendFile(filePath);
-
-  } catch (error) {
-    console.error('Error serving file:', error);
-    res.status(500).json({
-      success: false,
-      message: 'Error retrieving file'
-    });
-  }
-});
 
 const authRoutes = require('./routes/auth');
 const userRoutes = require("./routes/userroutes");
