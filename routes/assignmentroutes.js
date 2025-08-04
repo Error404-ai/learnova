@@ -1,6 +1,7 @@
 const express = require('express');
 const router = express.Router();
 const { protect } = require('../middlewares/authMiddleware');
+const { uploadAssignmentFiles } = require('../middlewares/uploadMiddleware'); 
 const {
   createAssignment,
   getClassAssignments,
@@ -11,7 +12,6 @@ const {
   getAssignmentSubmissions,
   gradeSubmission,
   getAssignmentsBySubject,
-  uploadAssignmentFiles,
 } = require('../controllers/assignmentcontrollers');
 
 router.use(protect);

@@ -1,58 +1,7 @@
 const Assignment = require('../models/assignment');
 const Class = require('../models/Class');
 const mongoose = require('mongoose');
-const multer = require('multer');
-const path = require('path');
 const fs = require('fs');
-
-const storage = multer.diskStorage({
-  destination: function (req, file, cb) {
-    const uploadPath = 'uploads/assignments/';
-  
-    if (!fs.existsSync(uploadPath)) {
-      fs.mkdirSync(uploadPath, { recursive: true });
-    }
-    
-    cb(null, uploadPath);
-  },
-  filename: function (req, file, cb) {
-    const uniqueSuffix = Date.now() + '-' + Math.round(Math.random() * 1E9);
-    const fileExtension = path.extname(file.originalname);
-    const fileName = file.fieldname + '-' + uniqueSuffix + fileExtension;
-    cb(null, fileName);
-  }
-});
-
-const fileFilter = (req, file, cb) => {
-  const allowedTypes = [
-    'application/pdf',
-    'application/msword',
-    'application/vnd.openxmlformats-officedocument.wordprocessingml.document',
-    'text/plain',
-    'image/jpeg',
-    'image/png',
-    'image/gif'
-  ];
-  
-  if (allowedTypes.includes(file.mimetype)) {
-    cb(null, true);
-  } else {
-    cb(new Error('Invalid file type. Only PDF, DOC, DOCX, TXT, and images are allowed.'), false);
-  }
-};
-
-// Configure multer
-const upload = multer({
-  storage: storage,
-  limits: {
-    fileSize: 10 * 1024 * 1024, // 10MB limit
-    files: 5 // Maximum 5 files
-  },
-  fileFilter: fileFilter
-});
-
-// Middleware for handling multiple file uploads - EXPORT EARLY
-exports.uploadAssignmentFiles = upload.array('attachments', 5);
 
 const isValidObjectId = (id) => {
   return mongoose.Types.ObjectId.isValid(id) && /^[0-9a-fA-F]{24}$/.test(id);
@@ -78,7 +27,6 @@ const checkClassPermission = async (classId, userId) => {
   };
 };
 
-// Enhanced createAssignment function
 exports.createAssignment = async (req, res) => {
   try {
     console.log('=== CREATE ASSIGNMENT DEBUG ===');
