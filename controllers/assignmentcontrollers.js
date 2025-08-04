@@ -907,10 +907,8 @@ exports.getAssignmentStats = async (req, res) => {
 exports.submitAssignment = async (req, res) => {
   try {
     const { assignmentId } = req.params;
-    const { content, attachments } = req.body;
+    const { content } = req.body;
     const userId = req.user?.id;
-
-    console.log('Submit assignment:', { assignmentId, userId, content, attachments });
 
     if (!assignmentId) {
       return res.status(400).json({
@@ -925,6 +923,7 @@ exports.submitAssignment = async (req, res) => {
         message: 'Authentication required'
       });
     }
+
     if (!isValidObjectId(assignmentId)) {
       return res.status(400).json({
         success: false,
@@ -938,6 +937,7 @@ exports.submitAssignment = async (req, res) => {
         message: 'Submission content is required'
       });
     }
+
     const assignment = await Assignment.findById(assignmentId)
       .populate('classId', 'students className');
 
@@ -958,29 +958,34 @@ exports.submitAssignment = async (req, res) => {
         message: 'Only enrolled students can submit assignments'
       });
     }
+
     if (assignment.status !== 'active') {
       return res.status(400).json({
         success: false,
         message: 'Assignment is not active for submissions'
       });
     }
+
     const now = new Date();
     const isOverdue = assignment.dueDate && now > new Date(assignment.dueDate);
-    
+
     if (isOverdue && !assignment.allowLateSubmission) {
       return res.status(400).json({
         success: false,
         message: 'Assignment deadline has passed and late submissions are not allowed'
       });
     }
+
     const existingSubmissionIndex = assignment.submissions.findIndex(
       sub => sub.studentId.toString() === userId
     );
 
+    const attachments = req.files?.map(file => `/uploads/assignments/${file.filename}`) || [];
+
     const submissionData = {
       studentId: new mongoose.Types.ObjectId(userId),
       content: content.trim(),
-      attachments: Array.isArray(attachments) ? attachments : [],
+      attachments,
       submittedAt: now,
       isLate: isOverdue,
       status: 'submitted'
@@ -998,7 +1003,6 @@ exports.submitAssignment = async (req, res) => {
 
     await assignment.save();
 
-    // Populate the updated assignment
     await assignment.populate('submissions.studentId', 'name email');
 
     const userSubmission = assignment.submissions.find(
