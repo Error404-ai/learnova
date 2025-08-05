@@ -34,11 +34,61 @@ const io = new Server(server, {
 
 const activeUsers = new Map();
 const classRooms = new Map();
+const messageRateLimits = new Map();
+
+const sanitizeInput = (input) => {
+  if (typeof input !== 'string') return '';
+  return input.trim().substring(0, 1000);
+};
+
+const sendError = (socket, message, code = 'GENERAL_ERROR') => {
+  socket.emit('error', { 
+    message, 
+    code, 
+    timestamp: new Date().toISOString() 
+  });
+};
+
+const validateMessageRate = (userId) => {
+  const now = Date.now();
+  const userLimit = messageRateLimits.get(userId) || { count: 0, resetTime: now + 60000 };
+  
+  if (now > userLimit.resetTime) {
+    userLimit.count = 0;
+    userLimit.resetTime = now + 60000;
+  }
+  
+  if (userLimit.count >= 10) {
+    return false;
+  }
+  
+  userLimit.count++;
+  messageRateLimits.set(userId, userLimit);
+  return true;
+};
+
+const broadcastActiveUsers = (classId) => {
+  const activeClassUsers = Array.from(classRooms.get(classId) || [])
+    .map(socketId => activeUsers.get(socketId))
+    .filter(Boolean);
+  
+  io.to(`class_${classId}`).emit('active_users', activeClassUsers);
+};
 
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
   socket.on('joinClass', (data) => {
+    if (!data.userId || !data.userName || !data.classId || !data.userRole) {
+      sendError(socket, 'Missing required fields', 'VALIDATION_ERROR');
+      return;
+    }
+    
+    if (!['teacher', 'student'].includes(data.userRole)) {
+      sendError(socket, 'Invalid user role', 'VALIDATION_ERROR');
+      return;
+    }
+
     const { userId, userName, classId, userRole } = data;
 
     Array.from(socket.rooms).forEach(room => {
@@ -64,17 +114,24 @@ io.on('connection', (socket) => {
 
     console.log(`${userName} (${userRole}) joined class ${classId}`);
 
-    const activeClassUsers = Array.from(classRooms.get(classId) || [])
-      .map(socketId => activeUsers.get(socketId))
-      .filter(Boolean);
-
-    socket.emit('active_users', activeClassUsers);
+    broadcastActiveUsers(classId);
   });
 
   socket.on('sendMessage', async (data) => {
     const user = activeUsers.get(socket.id);
     if (!user) {
-      socket.emit('error', { message: 'User not authenticated' });
+      sendError(socket, 'User not authenticated', 'AUTH_ERROR');
+      return;
+    }
+
+    const sanitizedContent = sanitizeInput(data.content);
+    if (!sanitizedContent) {
+      sendError(socket, 'Message content is required', 'VALIDATION_ERROR');
+      return;
+    }
+
+    if (!validateMessageRate(user.userId)) {
+      sendError(socket, 'Rate limit exceeded', 'RATE_LIMIT_ERROR');
       return;
     }
 
@@ -83,7 +140,7 @@ io.on('connection', (socket) => {
         sender: user.userId,
         senderName: user.userName,
         senderRole: user.userRole,
-        content: data.content,
+        content: sanitizedContent,
         classId: user.classId,
         type: data.type || 'message'
       });
@@ -106,14 +163,27 @@ io.on('connection', (socket) => {
       io.to(`class_${user.classId}`).emit('newMessage', messageData);
     } catch (error) {
       console.error('Error saving message:', error);
-      socket.emit('error', { message: 'Failed to send message' });
+      
+      if (error.name === 'ValidationError') {
+        sendError(socket, 'Invalid message format', 'VALIDATION_ERROR');
+      } else if (error.name === 'MongoError') {
+        sendError(socket, 'Database error, please try again', 'DATABASE_ERROR');
+      } else {
+        sendError(socket, 'Failed to send message', 'SERVER_ERROR');
+      }
     }
   });
 
   socket.on('send_announcement', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user || user.userRole !== 'teacher') {
-      socket.emit('error', { message: 'Only teachers can send announcements' });
+      sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
+      return;
+    }
+
+    const sanitizedMessage = sanitizeInput(data.message);
+    if (!sanitizedMessage) {
+      sendError(socket, 'Announcement message is required', 'VALIDATION_ERROR');
       return;
     }
 
@@ -122,7 +192,7 @@ io.on('connection', (socket) => {
       userId: user.userId,
       userName: user.userName,
       userRole: user.userRole,
-      message: data.message,
+      message: sanitizedMessage,
       classId: user.classId,
       timestamp: new Date(),
       type: 'announcement',
@@ -135,7 +205,13 @@ io.on('connection', (socket) => {
   socket.on('ask_question', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user) {
-      socket.emit('error', { message: 'User not authenticated' });
+      sendError(socket, 'User not authenticated', 'AUTH_ERROR');
+      return;
+    }
+
+    const sanitizedQuestion = sanitizeInput(data.question);
+    if (!sanitizedQuestion) {
+      sendError(socket, 'Question is required', 'VALIDATION_ERROR');
       return;
     }
 
@@ -144,7 +220,7 @@ io.on('connection', (socket) => {
       userId: user.userId,
       userName: user.userName,
       userRole: user.userRole,
-      question: data.question,
+      question: sanitizedQuestion,
       classId: user.classId,
       timestamp: new Date(),
       type: 'question',
@@ -157,7 +233,12 @@ io.on('connection', (socket) => {
   socket.on('notify_assignment', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user || user.userRole !== 'teacher') {
-      socket.emit('error', { message: 'Only teachers can send assignment notifications' });
+      sendError(socket, 'Only teachers can send assignment notifications', 'PERMISSION_ERROR');
+      return;
+    }
+
+    if (!data.assignmentId || !data.title) {
+      sendError(socket, 'Assignment ID and title are required', 'VALIDATION_ERROR');
       return;
     }
 
@@ -165,7 +246,7 @@ io.on('connection', (socket) => {
       id: Date.now().toString(),
       type: 'assignment_notification',
       assignmentId: data.assignmentId,
-      title: data.title,
+      title: sanitizeInput(data.title),
       dueDate: data.dueDate,
       classId: user.classId,
       timestamp: new Date(),
@@ -179,13 +260,19 @@ io.on('connection', (socket) => {
     const user = activeUsers.get(socket.id);
     if (user) {
       console.log(`User disconnected: ${user.userName} (${socket.id})`);
+      
       if (classRooms.has(user.classId)) {
         classRooms.get(user.classId).delete(socket.id);
+        
         if (classRooms.get(user.classId).size === 0) {
           classRooms.delete(user.classId);
+        } else {
+          broadcastActiveUsers(user.classId);
         }
       }
+      
       activeUsers.delete(socket.id);
+      messageRateLimits.delete(user.userId);
     } else {
       console.log(`User disconnected: ${socket.id}`);
     }
