@@ -15,6 +15,8 @@ dotenv.config();
 const app = express();
 const server = http.createServer(app);
 
+const Message = require('./models/classMessage');
+
 const io = new Server(server, {
   cors: {
     origin: [
@@ -69,27 +71,43 @@ io.on('connection', (socket) => {
     socket.emit('active_users', activeClassUsers);
   });
 
-  socket.on('sendMessage', (data) => {
+  socket.on('sendMessage', async (data) => {
     const user = activeUsers.get(socket.id);
     if (!user) {
       socket.emit('error', { message: 'User not authenticated' });
       return;
     }
 
-    const messageData = {
-      _id: Date.now().toString(),
-      sender: {
-        _id: user.userId,
-        name: user.userName,
-        role: user.userRole,
-      },
-      content: data.content,
-      classId: user.classId,
-      timestamp: new Date(),
-      type: data.type || 'message'
-    };
+    try {
+      const newMessage = new Message({
+        sender: user.userId,
+        senderName: user.userName,
+        senderRole: user.userRole,
+        content: data.content,
+        classId: user.classId,
+        type: data.type || 'message'
+      });
 
-    io.to(`class_${user.classId}`).emit('newMessage', messageData);
+      await newMessage.save();
+
+      const messageData = {
+        _id: newMessage._id,
+        sender: {
+          _id: user.userId,
+          name: user.userName,
+          role: user.userRole,
+        },
+        content: newMessage.content,
+        classId: user.classId,
+        timestamp: newMessage.timestamp,
+        type: newMessage.type
+      };
+
+      io.to(`class_${user.classId}`).emit('newMessage', messageData);
+    } catch (error) {
+      console.error('Error saving message:', error);
+      socket.emit('error', { message: 'Failed to send message' });
+    }
   });
 
   socket.on('send_announcement', (data) => {
@@ -161,14 +179,12 @@ io.on('connection', (socket) => {
     const user = activeUsers.get(socket.id);
     if (user) {
       console.log(`User disconnected: ${user.userName} (${socket.id})`);
-
       if (classRooms.has(user.classId)) {
         classRooms.get(user.classId).delete(socket.id);
         if (classRooms.get(user.classId).size === 0) {
           classRooms.delete(user.classId);
         }
       }
-
       activeUsers.delete(socket.id);
     } else {
       console.log(`User disconnected: ${socket.id}`);
@@ -219,7 +235,7 @@ app.use(
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "https://cdn.socket.io"],
-      connectSrc: ["'self'", "ws:", "wss:"],
+      connectSrc: ["'self'", "ws:", "wss:", "https://project2-zphf.onrender.com"],
     },
   })
 );
@@ -249,6 +265,29 @@ app.use('/api/auth', authRoutes);
 app.use("/user", userRoutes);
 app.use('/api/class', classRoutes);
 app.use('/api/assign', assignmentRoutes);
+
+app.get('/api/class/:classId/messages', async (req, res) => {
+  try {
+    const { classId } = req.params;
+    const messages = await Message.find({ classId }).sort({ timestamp: 1 });
+    const formattedMessages = messages.map(msg => ({
+      _id: msg._id,
+      content: msg.content,
+      sender: {
+        _id: msg.sender,
+        name: msg.senderName,
+        role: msg.senderRole,
+      },
+      classId: msg.classId,
+      timestamp: msg.timestamp,
+      type: msg.type,
+    }));
+    res.json({ success: true, messages: formattedMessages });
+  } catch (error) {
+    console.error('Error fetching messages:', error);
+    res.status(500).json({ success: false, message: 'Failed to fetch messages' });
+  }
+});
 
 app.get('/', (req, res) => {
   res.json({
