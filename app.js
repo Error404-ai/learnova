@@ -13,7 +13,9 @@ const { Server } = require('socket.io');
 dotenv.config();
 
 const app = express();
-const server = http.createServer(app); // create HTTP server
+const server = http.createServer(app);
+
+// Enhanced Socket.IO configuration
 const io = new Server(server, {
   cors: {
     origin: [
@@ -23,22 +25,191 @@ const io = new Server(server, {
     ],
     credentials: true,
     methods: ["GET", "POST"]
-  }
+  },
+  // Additional configurations for production
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling']
 });
 
-//Handle Socket Connection
+// Store active users and their rooms (classes)
+const activeUsers = new Map();
+const classRooms = new Map();
+
+// Enhanced Socket Connection Handler
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  socket.on('send_message', (data) => {
-    console.log('Message received:', data);
-    io.emit('receive_message', data); 
+  // User joins a specific class room
+  socket.on('join_class', (data) => {
+    const { userId, userName, classId, userRole } = data;
+    
+    // Leave any previous rooms
+    Array.from(socket.rooms).forEach(room => {
+      if (room !== socket.id) {
+        socket.leave(room);
+      }
+    });
+    
+    // Join the new class room
+    socket.join(`class_${classId}`);
+    
+    // Store user info
+    activeUsers.set(socket.id, {
+      userId,
+      userName,
+      classId,
+      userRole,
+      joinedAt: new Date()
+    });
+    
+    // Update class room info
+    if (!classRooms.has(classId)) {
+      classRooms.set(classId, new Set());
+    }
+    classRooms.get(classId).add(socket.id);
+    
+    console.log(`${userName} (${userRole}) joined class ${classId}`);
+    
+    // Send active users list to the newly joined user
+    const activeClassUsers = Array.from(classRooms.get(classId) || [])
+      .map(socketId => activeUsers.get(socketId))
+      .filter(Boolean);
+    
+    socket.emit('active_users', activeClassUsers);
   });
 
+  // Handle class messages
+  socket.on('send_class_message', (data) => {
+    const user = activeUsers.get(socket.id);
+    if (!user) {
+      socket.emit('error', { message: 'User not authenticated' });
+      return;
+    }
+
+    const messageData = {
+      id: Date.now().toString(),
+      userId: user.userId,
+      userName: user.userName,
+      userRole: user.userRole,
+      message: data.message,
+      classId: user.classId,
+      timestamp: new Date(),
+      type: data.type || 'message' // message, announcement, question
+    };
+
+    console.log('Class message:', messageData);
+    
+    // Send to all users in the class
+    io.to(`class_${user.classId}`).emit('receive_class_message', messageData);
+  });
+
+  // Handle teacher announcements (only teachers can send)
+  socket.on('send_announcement', (data) => {
+    const user = activeUsers.get(socket.id);
+    if (!user || user.userRole !== 'teacher') {
+      socket.emit('error', { message: 'Only teachers can send announcements' });
+      return;
+    }
+
+    const announcementData = {
+      id: Date.now().toString(),
+      userId: user.userId,
+      userName: user.userName,
+      userRole: user.userRole,
+      message: data.message,
+      classId: user.classId,
+      timestamp: new Date(),
+      type: 'announcement',
+      urgent: data.urgent || false
+    };
+
+    console.log('Teacher announcement:', announcementData);
+    
+    // Send to all users in the class
+    io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
+  });
+
+  // Handle student questions/queries
+  socket.on('ask_question', (data) => {
+    const user = activeUsers.get(socket.id);
+    if (!user) {
+      socket.emit('error', { message: 'User not authenticated' });
+      return;
+    }
+
+    const questionData = {
+      id: Date.now().toString(),
+      userId: user.userId,
+      userName: user.userName,
+      userRole: user.userRole,
+      question: data.question,
+      classId: user.classId,
+      timestamp: new Date(),
+      type: 'question',
+      isAnonymous: data.isAnonymous || false
+    };
+
+    console.log('Student question:', questionData);
+    
+    // Send to all users in the class
+    io.to(`class_${user.classId}`).emit('receive_question', questionData);
+  });
+
+  // Handle assignment notifications (teachers only)
+  socket.on('notify_assignment', (data) => {
+    const user = activeUsers.get(socket.id);
+    if (!user || user.userRole !== 'teacher') {
+      socket.emit('error', { message: 'Only teachers can send assignment notifications' });
+      return;
+    }
+
+    const notificationData = {
+      id: Date.now().toString(),
+      type: 'assignment_notification',
+      assignmentId: data.assignmentId,
+      title: data.title,
+      dueDate: data.dueDate,
+      classId: user.classId,
+      timestamp: new Date(),
+      teacherName: user.userName
+    };
+
+    console.log('Assignment notification:', notificationData);
+    
+    // Send to all students in the class
+    socket.to(`class_${user.classId}`).emit('assignment_notification', notificationData);
+  });
+
+  // Handle disconnect
   socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.id}`);
+    const user = activeUsers.get(socket.id);
+    if (user) {
+      console.log(`User disconnected: ${user.userName} (${socket.id})`);
+      
+      // Remove from class room
+      if (classRooms.has(user.classId)) {
+        classRooms.get(user.classId).delete(socket.id);
+        if (classRooms.get(user.classId).size === 0) {
+          classRooms.delete(user.classId);
+        }
+      }
+      
+      // Remove from active users
+      activeUsers.delete(socket.id);
+    } else {
+      console.log(`User disconnected: ${socket.id}`);
+    }
+  });
+
+  // Handle errors
+  socket.on('error', (error) => {
+    console.error('Socket error:', error);
   });
 });
+
+// Make io accessible to routes
+app.set('io', io);
 
 const allowedOrigins = [
   'http://localhost:3000',
@@ -103,7 +274,24 @@ app.get('/', (req, res) => {
   res.json({ 
     message: 'API is running successfully!',
     version: '1.0.0',
-    timestamp: new Date().toISOString()
+    timestamp: new Date().toISOString(),
+    activeConnections: activeUsers.size,
+    activeClasses: classRooms.size
+  });
+});
+
+// API endpoint to get active users in a class 
+app.get('/api/class/:classId/active-users', (req, res) => {
+  const { classId } = req.params;
+  const activeClassUsers = Array.from(classRooms.get(classId) || [])
+    .map(socketId => activeUsers.get(socketId))
+    .filter(Boolean);
+  
+  res.json({
+    success: true,
+    classId,
+    activeUsers: activeClassUsers,
+    count: activeClassUsers.length
   });
 });
 
@@ -147,6 +335,7 @@ app.use('*', (req, res) => {
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`Allowed CORS origins:`, allowedOrigins);
       console.log(`Static files served from: ${path.join(__dirname, 'uploads')}`);
+      console.log(`Socket.IO enabled for real-time communication`);
     });
   } catch (err) {
     console.error('MongoDB connection error:', err);
@@ -156,16 +345,22 @@ app.use('*', (req, res) => {
 
 process.on('SIGTERM', () => {
   console.log('SIGTERM received. Shutting down gracefully...');
-  mongoose.connection.close(() => {
-    console.log('MongoDB connection closed.');
-    process.exit(0);
+  io.close(() => {
+    console.log('Socket.IO closed.');
+    mongoose.connection.close(() => {
+      console.log('MongoDB connection closed.');
+      process.exit(0);
+    });
   });
 });
 
 process.on('SIGINT', () => {
   console.log('SIGINT received. Shutting down gracefully...');
-  mongoose.connection.close(() => {
-    console.log('MongoDB connection closed.');
-    process.exit(0);
+  io.close(() => {
+    console.log('Socket.IO closed.');
+    mongoose.connection.close(() => {
+      console.log('MongoDB connection closed.');
+      process.exit(0);
+    });
   });
 });
