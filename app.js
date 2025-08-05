@@ -7,15 +7,14 @@ const session = require('express-session');
 const helmet = require("helmet");
 const path = require('path');
 const fs = require('fs');
-const http = require('http'); 
-const { Server } = require('socket.io'); 
+const http = require('http');
+const { Server } = require('socket.io');
 
 dotenv.config();
 
 const app = express();
 const server = http.createServer(app);
 
-// Enhanced Socket.IO configuration
 const io = new Server(server, {
   cors: {
     origin: [
@@ -26,35 +25,28 @@ const io = new Server(server, {
     credentials: true,
     methods: ["GET", "POST"]
   },
-  // Additional configurations for production
   pingTimeout: 60000,
   pingInterval: 25000,
   transports: ['websocket', 'polling']
 });
 
-// Store active users and their rooms (classes)
 const activeUsers = new Map();
 const classRooms = new Map();
 
-// Enhanced Socket Connection Handler
 io.on('connection', (socket) => {
   console.log(`User connected: ${socket.id}`);
 
-  // User joins a specific class room
-  socket.on('join_class', (data) => {
+  socket.on('joinClass', (data) => {
     const { userId, userName, classId, userRole } = data;
-    
-    // Leave any previous rooms
+
     Array.from(socket.rooms).forEach(room => {
       if (room !== socket.id) {
         socket.leave(room);
       }
     });
-    
-    // Join the new class room
+
     socket.join(`class_${classId}`);
-    
-    // Store user info
+
     activeUsers.set(socket.id, {
       userId,
       userName,
@@ -62,25 +54,22 @@ io.on('connection', (socket) => {
       userRole,
       joinedAt: new Date()
     });
-    
-    // Update class room info
+
     if (!classRooms.has(classId)) {
       classRooms.set(classId, new Set());
     }
     classRooms.get(classId).add(socket.id);
-    
+
     console.log(`${userName} (${userRole}) joined class ${classId}`);
-    
-    // Send active users list to the newly joined user
+
     const activeClassUsers = Array.from(classRooms.get(classId) || [])
       .map(socketId => activeUsers.get(socketId))
       .filter(Boolean);
-    
+
     socket.emit('active_users', activeClassUsers);
   });
 
-  // Handle class messages
-  socket.on('send_class_message', (data) => {
+  socket.on('sendMessage', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user) {
       socket.emit('error', { message: 'User not authenticated' });
@@ -88,23 +77,21 @@ io.on('connection', (socket) => {
     }
 
     const messageData = {
-      id: Date.now().toString(),
-      userId: user.userId,
-      userName: user.userName,
-      userRole: user.userRole,
-      message: data.message,
+      _id: Date.now().toString(),
+      sender: {
+        _id: user.userId,
+        name: user.userName,
+        role: user.userRole,
+      },
+      content: data.content,
       classId: user.classId,
       timestamp: new Date(),
-      type: data.type || 'message' // message, announcement, question
+      type: data.type || 'message'
     };
 
-    console.log('Class message:', messageData);
-    
-    // Send to all users in the class
-    io.to(`class_${user.classId}`).emit('receive_class_message', messageData);
+    io.to(`class_${user.classId}`).emit('newMessage', messageData);
   });
 
-  // Handle teacher announcements (only teachers can send)
   socket.on('send_announcement', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user || user.userRole !== 'teacher') {
@@ -124,13 +111,9 @@ io.on('connection', (socket) => {
       urgent: data.urgent || false
     };
 
-    console.log('Teacher announcement:', announcementData);
-    
-    // Send to all users in the class
     io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
   });
 
-  // Handle student questions/queries
   socket.on('ask_question', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user) {
@@ -150,13 +133,9 @@ io.on('connection', (socket) => {
       isAnonymous: data.isAnonymous || false
     };
 
-    console.log('Student question:', questionData);
-    
-    // Send to all users in the class
     io.to(`class_${user.classId}`).emit('receive_question', questionData);
   });
 
-  // Handle assignment notifications (teachers only)
   socket.on('notify_assignment', (data) => {
     const user = activeUsers.get(socket.id);
     if (!user || user.userRole !== 'teacher') {
@@ -175,40 +154,32 @@ io.on('connection', (socket) => {
       teacherName: user.userName
     };
 
-    console.log('Assignment notification:', notificationData);
-    
-    // Send to all students in the class
     socket.to(`class_${user.classId}`).emit('assignment_notification', notificationData);
   });
 
-  // Handle disconnect
   socket.on('disconnect', () => {
     const user = activeUsers.get(socket.id);
     if (user) {
       console.log(`User disconnected: ${user.userName} (${socket.id})`);
-      
-      // Remove from class room
+
       if (classRooms.has(user.classId)) {
         classRooms.get(user.classId).delete(socket.id);
         if (classRooms.get(user.classId).size === 0) {
           classRooms.delete(user.classId);
         }
       }
-      
-      // Remove from active users
+
       activeUsers.delete(socket.id);
     } else {
       console.log(`User disconnected: ${socket.id}`);
     }
   });
 
-  // Handle errors
   socket.on('error', (error) => {
     console.error('Socket error:', error);
   });
 });
 
-// Make io accessible to routes
 app.set('io', io);
 
 const allowedOrigins = [
@@ -242,7 +213,16 @@ app.options('*', (req, res) => {
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
-app.use(helmet({ crossOriginOpenerPolicy: false }));
+app.use(
+  helmet.contentSecurityPolicy({
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "https://cdn.socket.io"],
+      connectSrc: ["'self'", "ws:", "wss:"],
+    },
+  })
+);
 
 app.use(session({
   resave: false,
@@ -271,7 +251,7 @@ app.use('/api/class', classRoutes);
 app.use('/api/assign', assignmentRoutes);
 
 app.get('/', (req, res) => {
-  res.json({ 
+  res.json({
     message: 'API is running successfully!',
     version: '1.0.0',
     timestamp: new Date().toISOString(),
@@ -280,13 +260,12 @@ app.get('/', (req, res) => {
   });
 });
 
-// API endpoint to get active users in a class 
 app.get('/api/class/:classId/active-users', (req, res) => {
   const { classId } = req.params;
   const activeClassUsers = Array.from(classRooms.get(classId) || [])
     .map(socketId => activeUsers.get(socketId))
     .filter(Boolean);
-  
+
   res.json({
     success: true,
     classId,
@@ -330,7 +309,7 @@ app.use('*', (req, res) => {
     console.log('MongoDB connected successfully');
 
     const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () => { 
+    server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
       console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
       console.log(`Allowed CORS origins:`, allowedOrigins);
