@@ -9,6 +9,7 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { Server } = require('socket.io');
+const jwt = require('jsonwebtoken');
 
 dotenv.config();
 
@@ -16,6 +17,7 @@ const app = express();
 const server = http.createServer(app);
 
 const Message = require('./models/classMessage');
+const User = require('./models/User');
 
 const io = new Server(server, {
   cors: {
@@ -75,21 +77,80 @@ const broadcastActiveUsers = (classId) => {
   io.to(`class_${classId}`).emit('active_users', activeClassUsers);
 };
 
+const sendClassMessages = async (socket, classId) => {
+  try {
+    const messages = await Message.find({ classId })
+      .populate('sender', 'name role')
+      .sort({ timestamp: -1 })
+      .limit(50);
+  
+    const formattedMessages = messages.reverse().map(msg => ({
+      _id: msg._id,
+      content: msg.content,
+      sender: {
+        _id: msg.sender._id,
+        name: msg.sender.name,
+        role: msg.sender.role,
+      },
+      classId: msg.classId,
+      timestamp: msg.timestamp,
+      type: msg.type,
+    }));
+  
+    socket.emit('classMessages', formattedMessages);
+  } catch (error) {
+    console.error('Error sending class messages:', error);
+  }
+};
+
+io.use(async (socket, next) => {
+  try {
+    const token = socket.handshake.auth.token;
+    
+    if (!token) {
+      console.log('No token provided in socket connection');
+      return next(new Error('Authentication token required'));
+    }
+
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id || decoded.userId);
+    if (!user) {
+      console.log('User not found for token');
+      return next(new Error('User not found'));
+    }
+
+    socket.userId = user._id.toString();
+    socket.userName = user.name;
+    socket.userRole = user.role;
+    socket.userEmail = user.email;
+    
+    console.log(`Socket authenticated for user: ${user.name} (${user.role})`);
+    next();
+  } catch (error) {
+    console.log('Socket authentication failed:', error.message);
+    if (error.name === 'JsonWebTokenError') {
+      return next(new Error('Invalid token'));
+    } else if (error.name === 'TokenExpiredError') {
+      return next(new Error('Token expired'));
+    } else {
+      return next(new Error('Authentication failed'));
+    }
+  }
+});
+
 io.on('connection', (socket) => {
-  console.log(`User connected: ${socket.id}`);
+  console.log(` User connected: ${socket.userName} (${socket.id})`);
 
   socket.on('joinClass', (data) => {
-    if (!data.userId || !data.userName || !data.classId || !data.userRole) {
-      sendError(socket, 'Missing required fields', 'VALIDATION_ERROR');
-      return;
-    }
-    
-    if (!['teacher', 'student'].includes(data.userRole)) {
-      sendError(socket, 'Invalid user role', 'VALIDATION_ERROR');
-      return;
-    }
+    const userId = socket.userId;
+    const userName = socket.userName;
+    const userRole = socket.userRole;
+    const classId = data.classId;
 
-    const { userId, userName, classId, userRole } = data;
+    if (!classId) {
+      sendError(socket, 'Class ID is required', 'VALIDATION_ERROR');
+      return;
+    }
 
     Array.from(socket.rooms).forEach(room => {
       if (room !== socket.id) {
@@ -113,14 +174,21 @@ io.on('connection', (socket) => {
     classRooms.get(classId).add(socket.id);
 
     console.log(`${userName} (${userRole}) joined class ${classId}`);
-
     broadcastActiveUsers(classId);
+
+    sendClassMessages(socket, classId);
   });
 
   socket.on('sendMessage', async (data) => {
-    const user = activeUsers.get(socket.id);
-    if (!user) {
-      sendError(socket, 'User not authenticated', 'AUTH_ERROR');
+    const user = {
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole,
+      classId: activeUsers.get(socket.id)?.classId
+    };
+
+    if (!user.classId) {
+      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
       return;
     }
 
@@ -174,13 +242,13 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('send_announcement', (data) => {
-    const user = activeUsers.get(socket.id);
-    if (!user || user.userRole !== 'teacher') {
+  socket.on('send_announcement', async (data) => {
+    if (socket.userRole !== 'teacher') {
       sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
       return;
     }
 
+    const user = activeUsers.get(socket.id);
     const sanitizedMessage = sanitizeInput(data.message);
     if (!sanitizedMessage) {
       sendError(socket, 'Announcement message is required', 'VALIDATION_ERROR');
@@ -189,26 +257,23 @@ io.on('connection', (socket) => {
 
     const announcementData = {
       id: Date.now().toString(),
-      userId: user.userId,
-      userName: user.userName,
-      userRole: user.userRole,
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole,
       message: sanitizedMessage,
-      classId: user.classId,
+      classId: user?.classId,
       timestamp: new Date(),
       type: 'announcement',
       urgent: data.urgent || false
     };
 
-    io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
+    if (user?.classId) {
+      io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
+    }
   });
 
   socket.on('ask_question', (data) => {
     const user = activeUsers.get(socket.id);
-    if (!user) {
-      sendError(socket, 'User not authenticated', 'AUTH_ERROR');
-      return;
-    }
-
     const sanitizedQuestion = sanitizeInput(data.question);
     if (!sanitizedQuestion) {
       sendError(socket, 'Question is required', 'VALIDATION_ERROR');
@@ -217,22 +282,23 @@ io.on('connection', (socket) => {
 
     const questionData = {
       id: Date.now().toString(),
-      userId: user.userId,
-      userName: user.userName,
-      userRole: user.userRole,
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole,
       question: sanitizedQuestion,
-      classId: user.classId,
+      classId: user?.classId,
       timestamp: new Date(),
       type: 'question',
       isAnonymous: data.isAnonymous || false
     };
 
-    io.to(`class_${user.classId}`).emit('receive_question', questionData);
+    if (user?.classId) {
+      io.to(`class_${user.classId}`).emit('receive_question', questionData);
+    }
   });
 
   socket.on('notify_assignment', (data) => {
-    const user = activeUsers.get(socket.id);
-    if (!user || user.userRole !== 'teacher') {
+    if (socket.userRole !== 'teacher') {
       sendError(socket, 'Only teachers can send assignment notifications', 'PERMISSION_ERROR');
       return;
     }
@@ -242,18 +308,21 @@ io.on('connection', (socket) => {
       return;
     }
 
+    const user = activeUsers.get(socket.id);
     const notificationData = {
       id: Date.now().toString(),
       type: 'assignment_notification',
       assignmentId: data.assignmentId,
       title: sanitizeInput(data.title),
       dueDate: data.dueDate,
-      classId: user.classId,
+      classId: user?.classId,
       timestamp: new Date(),
-      teacherName: user.userName
+      teacherName: socket.userName
     };
 
-    socket.to(`class_${user.classId}`).emit('assignment_notification', notificationData);
+    if (user?.classId) {
+      socket.to(`class_${user.classId}`).emit('assignment_notification', notificationData);
+    }
   });
 
   socket.on('disconnect', () => {
