@@ -154,82 +154,98 @@ io.on('connection', (socket) => {
     broadcastActiveUsers(classId);
     sendClassMessages(socket, classId);
   });
+  
+socket.on('sendMessage', async (data) => {
+  const user = {
+    userId: socket.userId,
+    userName: socket.userName,
+    userRole: socket.userRole,
+    classId: activeUsers.get(socket.id)?.classId
+  };
 
-  socket.on('sendMessage', async (data) => {
-    const user = {
-      userId: socket.userId,
-      userName: socket.userName,
-      userRole: socket.userRole,
-      classId: activeUsers.get(socket.id)?.classId
+  console.log('User data for message:', user); // Debug log
+
+  if (!user.classId) {
+    sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+    return;
+  }
+
+  if (!user.userRole) {
+    console.error('User role is missing:', socket.userRole);
+    sendError(socket, 'User role is missing, please reconnect', 'SESSION_ERROR');
+    return;
+  }
+
+  const sanitizedContent = sanitizeInput(data.content);
+  if (!sanitizedContent) {
+    sendError(socket, 'Message content is required', 'VALIDATION_ERROR');
+    return;
+  }
+
+  if (!validateMessageRate(user.userId)) {
+    sendError(socket, 'Rate limit exceeded', 'RATE_LIMIT_ERROR');
+    return;
+  }
+
+  try {
+    const messageData = {
+      sender: user.userId,
+      senderName: user.userName,
+      senderRole: user.userRole || 'student', // Provide default value
+      content: sanitizedContent,
+      classId: user.classId,
+      type: data.type || 'message'
     };
-    if (!user.classId) {
-      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+
+    // Additional validation
+    if (!messageData.senderRole) {
+      console.error('senderRole is still missing after assignment:', messageData);
+      sendError(socket, 'User role validation failed', 'VALIDATION_ERROR');
       return;
     }
-    const sanitizedContent = sanitizeInput(data.content);
-    if (!sanitizedContent) {
-      sendError(socket, 'Message content is required', 'VALIDATION_ERROR');
-      return;
+
+    console.log('Message data to save:', messageData); // Debug log
+
+    const newMessage = new Message(messageData);
+    await newMessage.save();
+
+    const responseData = {
+      _id: newMessage._id,
+      sender: {
+        _id: user.userId,
+        name: user.userName,
+        role: user.userRole,
+      },
+      content: newMessage.content,
+      classId: user.classId,
+      timestamp: newMessage.timestamp,
+      type: newMessage.type
+    };
+
+    io.to(`class_${user.classId}`).emit('newMessage', responseData);
+  } catch (error) {
+    console.error('Error saving message:', error);
+    
+    if (error.name === 'ValidationError') {
+      const validationErrors = Object.keys(error.errors).map(key => ({
+        field: key,
+        message: error.errors[key].message
+      }));
+      
+      console.error('Validation errors:', validationErrors);
+      
+      const errorMessage = validationErrors.length > 0 
+        ? `Validation failed: ${validationErrors[0].message}`
+        : 'Invalid message format';
+        
+      sendError(socket, errorMessage, 'VALIDATION_ERROR');
+    } else if (error.name === 'MongoError') {
+      sendError(socket, 'Database error, please try again', 'DATABASE_ERROR');
+    } else {
+      sendError(socket, 'Failed to send message', 'SERVER_ERROR');
     }
-    if (!validateMessageRate(user.userId)) {
-      sendError(socket, 'Rate limit exceeded', 'RATE_LIMIT_ERROR');
-      return;
-    }
-    try {
-      const messageData = {
-        sender: user.userId,
-        senderName: user.userName,
-        senderRole: user.userRole,
-        content: sanitizedContent,
-        classId: user.classId,
-        type: data.type || 'message'
-      };
-      if (!messageData.sender || !messageData.senderName || !messageData.classId) {
-        sendError(socket, 'Required fields missing', 'VALIDATION_ERROR');
-        return;
-      }
-      if (typeof messageData.sender !== 'string' || messageData.sender.length !== 24) {
-        sendError(socket, 'Invalid sender ID format', 'VALIDATION_ERROR');
-        return;
-      }
-      if (typeof messageData.classId !== 'string' || messageData.classId.length !== 24) {
-        sendError(socket, 'Invalid class ID format', 'VALIDATION_ERROR');
-        return;
-      }
-      const newMessage = new Message(messageData);
-      await newMessage.save();
-      const responseData = {
-        _id: newMessage._id,
-        sender: {
-          _id: user.userId,
-          name: user.userName,
-          role: user.userRole,
-        },
-        content: newMessage.content,
-        classId: user.classId,
-        timestamp: newMessage.timestamp,
-        type: newMessage.type
-      };
-      io.to(`class_${user.classId}`).emit('newMessage', responseData);
-    } catch (error) {
-      if (error.name === 'ValidationError') {
-        const validationErrors = Object.keys(error.errors).map(key => ({
-          field: key,
-          message: error.errors[key].message
-        }));
-        const errorMessage = validationErrors.length > 0 
-          ? `Validation failed: ${validationErrors[0].message}`
-          : 'Invalid message format';
-        sendError(socket, errorMessage, 'VALIDATION_ERROR');
-      } else if (error.name === 'CastError') {
-        sendError(socket, 'Invalid data format provided', 'VALIDATION_ERROR');
-      } else if (error.code === 11000) {
-        sendError(socket, 'Duplicate message detected', 'DUPLICATE_ERROR');
-      } else {
-        sendError(socket, 'Failed to send message', 'SERVER_ERROR');
-      }
-    }
-  });
+  }
+});
 
   socket.on('send_announcement', async (data) => {
     if (socket.userRole !== 'teacher') {
