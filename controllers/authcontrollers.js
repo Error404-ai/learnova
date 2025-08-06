@@ -108,6 +108,7 @@ exports.verifyOTP = async (req, res) => {
         res.status(200).json({ 
             message: 'OTP verified successfully', 
             userId: user._id,
+            username: user.name,
             accessToken, 
             refreshToken 
         });
@@ -115,6 +116,7 @@ exports.verifyOTP = async (req, res) => {
         res.status(500).json({ message: 'Error verifying OTP', error: error.message });
     }
 };
+
 
 // Forgot Password API 
 exports.forgotPassword = async (req, res) => {
@@ -229,6 +231,7 @@ exports.login = async (req, res) => {
         res.status(200).json({ 
             message: 'Login successful', 
             userId: user._id,
+            username: user.name,
             accessToken, 
             refreshToken 
         });
@@ -236,7 +239,6 @@ exports.login = async (req, res) => {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
 };
-
 
 // Refresh Token API
 exports.refreshToken = async (req, res) => {
