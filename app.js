@@ -20,18 +20,18 @@ const Message = require('./models/classMessage');
 const User = require('./models/User');
 
 const io = new Server(server, {
-  cors: {
-    origin: [
-      'http://localhost:3000',
-      'http://127.0.0.1:3000',
-      'https://learnova-one.vercel.app'
-    ],
-    credentials: true,
-    methods: ["GET", "POST"]
-  },
-  pingTimeout: 60000,
-  pingInterval: 25000,
-  transports: ['websocket', 'polling']
+  cors: {
+    origin: [
+      'http://localhost:3000',
+      'http://127.0.0.1:3000',
+      'https://learnova-one.vercel.app'
+    ],
+    credentials: true,
+    methods: ["GET", "POST"]
+  },
+  pingTimeout: 60000,
+  pingInterval: 25000,
+  transports: ['websocket', 'polling']
 });
 
 const activeUsers = new Map();
@@ -39,373 +39,348 @@ const classRooms = new Map();
 const messageRateLimits = new Map();
 
 const sanitizeInput = (input) => {
-  if (typeof input !== 'string') return '';
-  return input.trim().substring(0, 1000);
+  if (typeof input !== 'string') return '';
+  return input.trim().substring(0, 1000);
 };
 
 const sendError = (socket, message, code = 'GENERAL_ERROR') => {
-  socket.emit('error', { 
-    message, 
-    code, 
-    timestamp: new Date().toISOString() 
-  });
+  socket.emit('error', { 
+    message, 
+    code, 
+    timestamp: new Date().toISOString() 
+  });
 };
 
 const validateMessageRate = (userId) => {
-  const now = Date.now();
-  const userLimit = messageRateLimits.get(userId) || { count: 0, resetTime: now + 60000 };
-  
-  if (now > userLimit.resetTime) {
-    userLimit.count = 0;
-    userLimit.resetTime = now + 60000;
-  }
-  
-  if (userLimit.count >= 10) {
-    return false;
-  }
-  
-  userLimit.count++;
-  messageRateLimits.set(userId, userLimit);
-  return true;
+  const now = Date.now();
+  const userLimit = messageRateLimits.get(userId) || { count: 0, resetTime: now + 60000 };
+  if (now > userLimit.resetTime) {
+    userLimit.count = 0;
+    userLimit.resetTime = now + 60000;
+  }
+  if (userLimit.count >= 10) {
+    return false;
+  }
+  userLimit.count++;
+  messageRateLimits.set(userId, userLimit);
+  return true;
 };
 
 const broadcastActiveUsers = (classId) => {
-  const activeClassUsers = Array.from(classRooms.get(classId) || [])
-    .map(socketId => activeUsers.get(socketId))
-    .filter(Boolean);
-  
-  io.to(`class_${classId}`).emit('active_users', activeClassUsers);
+  const activeClassUsers = Array.from(classRooms.get(classId) || [])
+    .map(socketId => activeUsers.get(socketId))
+    .filter(Boolean);
+  io.to(`class_${classId}`).emit('active_users', activeClassUsers);
 };
 
 const sendClassMessages = async (socket, classId) => {
-  try {
-    const messages = await Message.find({ classId })
-      .populate('sender', 'name role')
-      .sort({ timestamp: -1 })
-      .limit(50);
-  
-    const formattedMessages = messages.reverse().map(msg => ({
-      _id: msg._id,
-      content: msg.content,
-      sender: {
-        _id: msg.sender._id,
-        name: msg.sender.name,
-        role: msg.sender.role,
-      },
-      classId: msg.classId,
-      timestamp: msg.timestamp,
-      type: msg.type,
-    }));
-  
-    socket.emit('classMessages', formattedMessages);
-  } catch (error) {
-    console.error('Error sending class messages:', error);
-  }
+  try {
+    const messages = await Message.find({ classId })
+      .populate('sender', 'name role')
+      .sort({ timestamp: -1 })
+      .limit(50);
+    const formattedMessages = messages.reverse().map(msg => ({
+      _id: msg._id,
+      content: msg.content,
+      sender: {
+        _id: msg.sender._id,
+        name: msg.sender.name,
+        role: msg.sender.role,
+      },
+      classId: msg.classId,
+      timestamp: msg.timestamp,
+      type: msg.type,
+    }));
+    socket.emit('classMessages', formattedMessages);
+  } catch (error) {
+    console.error('Error sending class messages:', error);
+  }
 };
 
 io.use(async (socket, next) => {
-  try {
-    const token = socket.handshake.auth.token;
-    
-    if (!token) {
-      console.log('No token provided in socket connection');
-      return next(new Error('Authentication token required'));
-    }
-
-    const decoded = jwt.verify(token, process.env.JWT_SECRET);
-    const user = await User.findById(decoded.id || decoded.userId);
-    if (!user) {
-      console.log('User not found for token');
-      return next(new Error('User not found'));
-    }
-
-    socket.userId = user._id.toString();
-    socket.userName = user.name;
-    socket.userRole = user.role;
-    socket.userEmail = user.email;
-    
-    console.log(`Socket authenticated for user: ${user.name} (${user.role})`);
-    next();
-  } catch (error) {
-    console.log('Socket authentication failed:', error.message);
-    if (error.name === 'JsonWebTokenError') {
-      return next(new Error('Invalid token'));
-    } else if (error.name === 'TokenExpiredError') {
-      return next(new Error('Token expired'));
-    } else {
-      return next(new Error('Authentication failed'));
-    }
-  }
+  try {
+    const token = socket.handshake.auth.token;
+    if (!token) {
+      return next(new Error('Authentication token required'));
+    }
+    const decoded = jwt.verify(token, process.env.JWT_SECRET);
+    const user = await User.findById(decoded.id || decoded.userId);
+    if (!user) {
+      return next(new Error('User not found'));
+    }
+    socket.userId = user._id.toString();
+    socket.userName = user.name;
+    socket.userRole = user.role;
+    socket.userEmail = user.email;
+    next();
+  } catch (error) {
+    if (error.name === 'JsonWebTokenError') {
+      return next(new Error('Invalid token'));
+    } else if (error.name === 'TokenExpiredError') {
+      return next(new Error('Token expired'));
+    } else {
+      return next(new Error('Authentication failed'));
+    }
+  }
 });
 
 io.on('connection', (socket) => {
-  console.log(` User connected: ${socket.userName} (${socket.id})`);
+  socket.on('joinClass', (data) => {
+    const userId = socket.userId;
+    const userName = socket.userName;
+    const userRole = socket.userRole;
+    const classId = data.classId;
+    if (!classId) {
+      sendError(socket, 'Class ID is required', 'VALIDATION_ERROR');
+      return;
+    }
+    Array.from(socket.rooms).forEach(room => {
+      if (room !== socket.id) {
+        socket.leave(room);
+      }
+    });
+    socket.join(`class_${classId}`);
+    activeUsers.set(socket.id, {
+      userId,
+      userName,
+      classId,
+      userRole,
+      joinedAt: new Date()
+    });
+    if (!classRooms.has(classId)) {
+      classRooms.set(classId, new Set());
+    }
+    classRooms.get(classId).add(socket.id);
+    broadcastActiveUsers(classId);
+    sendClassMessages(socket, classId);
+  });
 
-  socket.on('joinClass', (data) => {
-    const userId = socket.userId;
-    const userName = socket.userName;
-    const userRole = socket.userRole;
-    const classId = data.classId;
+  socket.on('sendMessage', async (data) => {
+    const user = {
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole,
+      classId: activeUsers.get(socket.id)?.classId
+    };
+    if (!user.classId) {
+      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+      return;
+    }
+    const sanitizedContent = sanitizeInput(data.content);
+    if (!sanitizedContent) {
+      sendError(socket, 'Message content is required', 'VALIDATION_ERROR');
+      return;
+    }
+    if (!validateMessageRate(user.userId)) {
+      sendError(socket, 'Rate limit exceeded', 'RATE_LIMIT_ERROR');
+      return;
+    }
+    try {
+      const messageData = {
+        sender: user.userId,
+        senderName: user.userName,
+        senderRole: user.userRole,
+        content: sanitizedContent,
+        classId: user.classId,
+        type: data.type || 'message'
+      };
+      if (!messageData.sender || !messageData.senderName || !messageData.classId) {
+        sendError(socket, 'Required fields missing', 'VALIDATION_ERROR');
+        return;
+      }
+      if (typeof messageData.sender !== 'string' || messageData.sender.length !== 24) {
+        sendError(socket, 'Invalid sender ID format', 'VALIDATION_ERROR');
+        return;
+      }
+      if (typeof messageData.classId !== 'string' || messageData.classId.length !== 24) {
+        sendError(socket, 'Invalid class ID format', 'VALIDATION_ERROR');
+        return;
+      }
+      const newMessage = new Message(messageData);
+      await newMessage.save();
+      const responseData = {
+        _id: newMessage._id,
+        sender: {
+          _id: user.userId,
+          name: user.userName,
+          role: user.userRole,
+        },
+        content: newMessage.content,
+        classId: user.classId,
+        timestamp: newMessage.timestamp,
+        type: newMessage.type
+      };
+      io.to(`class_${user.classId}`).emit('newMessage', responseData);
+    } catch (error) {
+      if (error.name === 'ValidationError') {
+        const validationErrors = Object.keys(error.errors).map(key => ({
+          field: key,
+          message: error.errors[key].message
+        }));
+        const errorMessage = validationErrors.length > 0 
+          ? `Validation failed: ${validationErrors[0].message}`
+          : 'Invalid message format';
+        sendError(socket, errorMessage, 'VALIDATION_ERROR');
+      } else if (error.name === 'CastError') {
+        sendError(socket, 'Invalid data format provided', 'VALIDATION_ERROR');
+      } else if (error.code === 11000) {
+        sendError(socket, 'Duplicate message detected', 'DUPLICATE_ERROR');
+      } else {
+        sendError(socket, 'Failed to send message', 'SERVER_ERROR');
+      }
+    }
+  });
 
-    if (!classId) {
-      sendError(socket, 'Class ID is required', 'VALIDATION_ERROR');
-      return;
-    }
+  socket.on('send_announcement', async (data) => {
+    if (socket.userRole !== 'teacher') {
+      sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
+      return;
+    }
+    const user = activeUsers.get(socket.id);
+    const sanitizedMessage = sanitizeInput(data.message);
+    if (!sanitizedMessage) {
+      sendError(socket, 'Announcement message is required', 'VALIDATION_ERROR');
+      return;
+    }
+    const announcementData = {
+      id: Date.now().toString(),
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole,
+      message: sanitizedMessage,
+      classId: user?.classId,
+      timestamp: new Date(),
+      type: 'announcement',
+      urgent: data.urgent || false
+    };
+    if (user?.classId) {
+      io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
+    }
+  });
 
-    Array.from(socket.rooms).forEach(room => {
-      if (room !== socket.id) {
-        socket.leave(room);
-      }
-    });
+  socket.on('ask_question', (data) => {
+    const user = activeUsers.get(socket.id);
+    const sanitizedQuestion = sanitizeInput(data.question);
+    if (!sanitizedQuestion) {
+      sendError(socket, 'Question is required', 'VALIDATION_ERROR');
+      return;
+    }
+    const questionData = {
+      id: Date.now().toString(),
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole,
+      question: sanitizedQuestion,
+      classId: user?.classId,
+      timestamp: new Date(),
+      type: 'question',
+      isAnonymous: data.isAnonymous || false
+    };
+    if (user?.classId) {
+      io.to(`class_${user.classId}`).emit('receive_question', questionData);
+    }
+  });
 
-    socket.join(`class_${classId}`);
+  socket.on('notify_assignment', (data) => {
+    if (socket.userRole !== 'teacher') {
+      sendError(socket, 'Only teachers can send assignment notifications', 'PERMISSION_ERROR');
+      return;
+    }
+    if (!data.assignmentId || !data.title) {
+      sendError(socket, 'Assignment ID and title are required', 'VALIDATION_ERROR');
+      return;
+    }
+    const user = activeUsers.get(socket.id);
+    const notificationData = {
+      id: Date.now().toString(),
+      type: 'assignment_notification',
+      assignmentId: data.assignmentId,
+      title: sanitizeInput(data.title),
+      dueDate: data.dueDate,
+      classId: user?.classId,
+      timestamp: new Date(),
+      teacherName: socket.userName
+    };
+    if (user?.classId) {
+      socket.to(`class_${user.classId}`).emit('assignment_notification', notificationData);
+    }
+  });
 
-    activeUsers.set(socket.id, {
-      userId,
-      userName,
-      classId,
-      userRole,
-      joinedAt: new Date()
-    });
+  socket.on('disconnect', () => {
+    const user = activeUsers.get(socket.id);
+    if (user) {
+      if (classRooms.has(user.classId)) {
+        classRooms.get(user.classId).delete(socket.id);
+        if (classRooms.get(user.classId).size === 0) {
+          classRooms.delete(user.classId);
+        } else {
+          broadcastActiveUsers(user.classId);
+        }
+      }
+      activeUsers.delete(socket.id);
+      messageRateLimits.delete(user.userId);
+    }
+  });
 
-    if (!classRooms.has(classId)) {
-      classRooms.set(classId, new Set());
-    }
-    classRooms.get(classId).add(socket.id);
-
-    console.log(`${userName} (${userRole}) joined class ${classId}`);
-    broadcastActiveUsers(classId);
-
-    sendClassMessages(socket, classId);
-  });
-
-  socket.on('sendMessage', async (data) => {
-    const user = {
-      userId: socket.userId,
-      userName: socket.userName,
-      userRole: socket.userRole,
-      classId: activeUsers.get(socket.id)?.classId
-    };
-
-    if (!user.classId) {
-      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
-      return;
-    }
-
-    const sanitizedContent = sanitizeInput(data.content);
-    if (!sanitizedContent) {
-      sendError(socket, 'Message content is required', 'VALIDATION_ERROR');
-      return;
-    }
-
-    if (!validateMessageRate(user.userId)) {
-      sendError(socket, 'Rate limit exceeded', 'RATE_LIMIT_ERROR');
-      return;
-    }
-
-    try {
-      const newMessage = new Message({
-        sender: user.userId,
-        senderName: user.userName,
-        senderRole: user.userRole,
-        content: sanitizedContent,
-        classId: user.classId,
-        type: data.type || 'message'
-      });
-
-      await newMessage.save();
-
-      const messageData = {
-        _id: newMessage._id,
-        sender: {
-          _id: user.userId,
-          name: user.userName,
-          role: user.userRole,
-        },
-        content: newMessage.content,
-        classId: user.classId,
-        timestamp: newMessage.timestamp,
-        type: newMessage.type
-      };
-
-      io.to(`class_${user.classId}`).emit('newMessage', messageData);
-    } catch (error) {
-      console.error('Error saving message:', error);
-      
-      if (error.name === 'ValidationError') {
-        sendError(socket, 'Invalid message format', 'VALIDATION_ERROR');
-      } else if (error.name === 'MongoError') {
-        sendError(socket, 'Database error, please try again', 'DATABASE_ERROR');
-      } else {
-        sendError(socket, 'Failed to send message', 'SERVER_ERROR');
-      }
-    }
-  });
-
-  socket.on('send_announcement', async (data) => {
-    if (socket.userRole !== 'teacher') {
-      sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
-      return;
-    }
-
-    const user = activeUsers.get(socket.id);
-    const sanitizedMessage = sanitizeInput(data.message);
-    if (!sanitizedMessage) {
-      sendError(socket, 'Announcement message is required', 'VALIDATION_ERROR');
-      return;
-    }
-
-    const announcementData = {
-      id: Date.now().toString(),
-      userId: socket.userId,
-      userName: socket.userName,
-      userRole: socket.userRole,
-      message: sanitizedMessage,
-      classId: user?.classId,
-      timestamp: new Date(),
-      type: 'announcement',
-      urgent: data.urgent || false
-    };
-
-    if (user?.classId) {
-      io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
-    }
-  });
-
-  socket.on('ask_question', (data) => {
-    const user = activeUsers.get(socket.id);
-    const sanitizedQuestion = sanitizeInput(data.question);
-    if (!sanitizedQuestion) {
-      sendError(socket, 'Question is required', 'VALIDATION_ERROR');
-      return;
-    }
-
-    const questionData = {
-      id: Date.now().toString(),
-      userId: socket.userId,
-      userName: socket.userName,
-      userRole: socket.userRole,
-      question: sanitizedQuestion,
-      classId: user?.classId,
-      timestamp: new Date(),
-      type: 'question',
-      isAnonymous: data.isAnonymous || false
-    };
-
-    if (user?.classId) {
-      io.to(`class_${user.classId}`).emit('receive_question', questionData);
-    }
-  });
-
-  socket.on('notify_assignment', (data) => {
-    if (socket.userRole !== 'teacher') {
-      sendError(socket, 'Only teachers can send assignment notifications', 'PERMISSION_ERROR');
-      return;
-    }
-
-    if (!data.assignmentId || !data.title) {
-      sendError(socket, 'Assignment ID and title are required', 'VALIDATION_ERROR');
-      return;
-    }
-
-    const user = activeUsers.get(socket.id);
-    const notificationData = {
-      id: Date.now().toString(),
-      type: 'assignment_notification',
-      assignmentId: data.assignmentId,
-      title: sanitizeInput(data.title),
-      dueDate: data.dueDate,
-      classId: user?.classId,
-      timestamp: new Date(),
-      teacherName: socket.userName
-    };
-
-    if (user?.classId) {
-      socket.to(`class_${user.classId}`).emit('assignment_notification', notificationData);
-    }
-  });
-
-  socket.on('disconnect', () => {
-    const user = activeUsers.get(socket.id);
-    if (user) {
-      console.log(`User disconnected: ${user.userName} (${socket.id})`);
-      
-      if (classRooms.has(user.classId)) {
-        classRooms.get(user.classId).delete(socket.id);
-        
-        if (classRooms.get(user.classId).size === 0) {
-          classRooms.delete(user.classId);
-        } else {
-          broadcastActiveUsers(user.classId);
-        }
-      }
-      
-      activeUsers.delete(socket.id);
-      messageRateLimits.delete(user.userId);
-    } else {
-      console.log(`User disconnected: ${socket.id}`);
-    }
-  });
-
-  socket.on('error', (error) => {
-    console.error('Socket error:', error);
-  });
+  socket.on('error', (error) => {
+    console.error('Socket error:', error);
+  });
 });
 
 app.set('io', io);
 
 const allowedOrigins = [
-  'http://localhost:3000',
-  'http://127.0.0.1:3000',
-  'https://learnova-one.vercel.app',
+  'http://localhost:3000',
+  'http://127.0.0.1:3000',
+  'https://learnova-one.vercel.app',
 ].filter(Boolean);
 
 app.use(cors({
-  origin: function (origin, callback) {
-    if (!origin) return callback(null, true);
-    if (allowedOrigins.includes(origin)) {
-      return callback(null, true);
-    } else {
-      return callback(new Error('Not allowed by CORS'));
-    }
-  },
-  credentials: true,
-  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
-  allowedHeaders: ['Content-Type', 'Authorization']
+  origin: function (origin, callback) {
+    if (!origin) return callback(null, true);
+    if (allowedOrigins.includes(origin)) {
+      return callback(null, true);
+    } else {
+      return callback(new Error('Not allowed by CORS'));
+    }
+  },
+  credentials: true,
+  methods: ['GET', 'POST', 'PUT', 'DELETE', 'OPTIONS'],
+  allowedHeaders: ['Content-Type', 'Authorization']
 }));
 
 app.options('*', (req, res) => {
-  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
-  res.setHeader('Access-Control-Allow-Credentials', 'true');
-  return res.sendStatus(204);
+  res.setHeader('Access-Control-Allow-Origin', req.headers.origin || '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization');
+  res.setHeader('Access-Control-Allow-Credentials', 'true');
+  return res.sendStatus(204);
 });
 
 app.use(express.json({ limit: '10mb' }));
 app.use(express.urlencoded({ extended: true, limit: '10mb' }));
 
 app.use(
-  helmet.contentSecurityPolicy({
-    useDefaults: true,
-    directives: {
-      defaultSrc: ["'self'"],
-      scriptSrc: ["'self'", "https://cdn.socket.io"],
-      connectSrc: [
-        "'self'", 
-        "ws:", 
-        "wss:", 
-        "http://localhost:5000", 
-        "https://project2-zphf.onrender.com"
-      ],
-    },
-  })
+  helmet.contentSecurityPolicy({
+    useDefaults: true,
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc: ["'self'", "https://cdn.socket.io"],
+      connectSrc: [
+        "'self'", 
+        "ws:", 
+        "wss:", 
+        "http://localhost:5000", 
+        "https://project2-zphf.onrender.com"
+      ],
+    },
+  })
 );
 
 app.use(session({
-  resave: false,
-  saveUninitialized: true,
-  secret: process.env.SESSION_SECRET || 'fallback-secret-key'
+  resave: false,
+  saveUninitialized: true,
+  secret: process.env.SESSION_SECRET || 'fallback-secret-key'
 }));
 
 require("./config/passport");
@@ -413,9 +388,9 @@ app.use(passport.initialize());
 app.use(passport.session());
 
 app.use('/uploads', (req, res, next) => {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
-  next();
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Cross-Origin-Resource-Policy', 'cross-origin');
+  next();
 }, express.static(path.join(__dirname, 'uploads')));
 
 const authRoutes = require('./routes/auth');
@@ -429,118 +404,103 @@ app.use('/api/class', classRoutes);
 app.use('/api/assign', assignmentRoutes);
 
 app.get('/api/class/:classId/messages', async (req, res) => {
-  try {
-    const { classId } = req.params;
-    const messages = await Message.find({ classId }).sort({ timestamp: 1 });
-    const formattedMessages = messages.map(msg => ({
-      _id: msg._id,
-      content: msg.content,
-      sender: {
-        _id: msg.sender,
-        name: msg.senderName,
-        role: msg.senderRole,
-      },
-      classId: msg.classId,
-      timestamp: msg.timestamp,
-      type: msg.type,
-    }));
-    res.json({ success: true, messages: formattedMessages });
-  } catch (error) {
-    console.error('Error fetching messages:', error);
-    res.status(500).json({ success: false, message: 'Failed to fetch messages' });
-  }
+  try {
+    const { classId } = req.params;
+    const messages = await Message.find({ classId }).sort({ timestamp: 1 });
+    const formattedMessages = messages.map(msg => ({
+      _id: msg._id,
+      content: msg.content,
+      sender: {
+        _id: msg.sender,
+        name: msg.senderName,
+        role: msg.senderRole,
+      },
+      classId: msg.classId,
+      timestamp: msg.timestamp,
+      type: msg.type,
+    }));
+    res.json({ success: true, messages: formattedMessages });
+  } catch (error) {
+    res.status(500).json({ success: false, message: 'Failed to fetch messages' });
+  }
 });
 
 app.get('/', (req, res) => {
-  res.json({
-    message: 'API is running successfully!',
-    version: '1.0.0',
-    timestamp: new Date().toISOString(),
-    activeConnections: activeUsers.size,
-    activeClasses: classRooms.size
-  });
+  res.json({
+    message: 'API is running successfully!',
+    version: '1.0.0',
+    timestamp: new Date().toISOString(),
+    activeConnections: activeUsers.size,
+    activeClasses: classRooms.size
+  });
 });
 
 app.get('/api/class/:classId/active-users', (req, res) => {
-  const { classId } = req.params;
-  const activeClassUsers = Array.from(classRooms.get(classId) || [])
-    .map(socketId => activeUsers.get(socketId))
-    .filter(Boolean);
+  const { classId } = req.params;
+  const activeClassUsers = Array.from(classRooms.get(classId) || [])
+    .map(socketId => activeUsers.get(socketId))
+    .filter(Boolean);
 
-  res.json({
-    success: true,
-    classId,
-    activeUsers: activeClassUsers,
-    count: activeClassUsers.length
-  });
+  res.json({
+    success: true,
+    classId,
+    activeUsers: activeClassUsers,
+    count: activeClassUsers.length
+  });
 });
 
 app.use((err, req, res, next) => {
-  if (err.message && err.message.includes('CORS')) {
-    return res.status(403).json({
-      success: false,
-      message: 'CORS Error: Origin not allowed',
-      origin: req.get('origin'),
-      allowedOrigins: allowedOrigins
-    });
-  }
-  next(err);
+  if (err.message && err.message.includes('CORS')) {
+    return res.status(403).json({
+      success: false,
+      message: 'CORS Error: Origin not allowed',
+      origin: req.get('origin'),
+      allowedOrigins: allowedOrigins
+    });
+  }
+  next(err);
 });
 
 app.use((err, req, res, next) => {
-  console.error('Global error handler:', err);
-  res.status(err.status || 500).json({
-    success: false,
-    message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
-    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
-  });
+  res.status(err.status || 500).json({
+    success: false,
+    message: process.env.NODE_ENV === 'development' ? err.message : 'Internal server error',
+    ...(process.env.NODE_ENV === 'development' && { stack: err.stack })
+  });
 });
 
 app.use('*', (req, res) => {
-  res.status(404).json({
-    success: false,
-    message: `Route ${req.originalUrl} not found`,
-    method: req.method
-  });
+  res.status(404).json({
+    success: false,
+    message: `Route ${req.originalUrl} not found`,
+    method: req.method
+  });
 });
 
 (async () => {
-  try {
-    await mongoose.connect(process.env.MONGO_URI);
-    console.log('MongoDB connected successfully');
-
-    const PORT = process.env.PORT || 5000;
-    server.listen(PORT, () => {
-      console.log(`Server running on port ${PORT}`);
-      console.log(`Environment: ${process.env.NODE_ENV || 'development'}`);
-      console.log(`Allowed CORS origins:`, allowedOrigins);
-      console.log(`Static files served from: ${path.join(__dirname, 'uploads')}`);
-      console.log(`Socket.IO enabled for real-time communication`);
-    });
-  } catch (err) {
-    console.error('MongoDB connection error:', err);
-    process.exit(1);
-  }
+  try {
+    await mongoose.connect(process.env.MONGO_URI);
+    const PORT = process.env.PORT || 5000;
+    server.listen(PORT, () => {
+      console.log(`Server running on port ${PORT}`);
+    });
+  } catch (err) {
+    process.exit(1);
+  }
 })();
 
 process.on('SIGTERM', () => {
-  console.log('SIGTERM received. Shutting down gracefully...');
-  io.close(() => {
-    console.log('Socket.IO closed.');
-    mongoose.connection.close(() => {
-      console.log('MongoDB connection closed.');
-      process.exit(0);
-    });
-  });
+  io.close(() => {
+    mongoose.connection.close(() => {
+      process.exit(0);
+    });
+  });
 });
 
 process.on('SIGINT', () => {
-  console.log('SIGINT received. Shutting down gracefully...');
-  io.close(() => {
-    console.log('Socket.IO closed.');
-    mongoose.connection.close(() => {
-      console.log('MongoDB connection closed.');
-      process.exit(0);
-});
-});
+  io.close(() => {
+    mongoose.connection.close(() => {
+      process.exit(0);
+    });
+  });
 });
