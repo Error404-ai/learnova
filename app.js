@@ -154,25 +154,17 @@ io.on('connection', (socket) => {
     broadcastActiveUsers(classId);
     sendClassMessages(socket, classId);
   });
-  
+
 socket.on('sendMessage', async (data) => {
   const user = {
     userId: socket.userId,
     userName: socket.userName,
-    userRole: socket.userRole,
+    userRole: socket.userRole || 'student', // Default to 'student' if missing
     classId: activeUsers.get(socket.id)?.classId
   };
 
-  console.log('User data for message:', user); // Debug log
-
   if (!user.classId) {
     sendError(socket, 'You must join a class first', 'CLASS_ERROR');
-    return;
-  }
-
-  if (!user.userRole) {
-    console.error('User role is missing:', socket.userRole);
-    sendError(socket, 'User role is missing, please reconnect', 'SESSION_ERROR');
     return;
   }
 
@@ -191,20 +183,13 @@ socket.on('sendMessage', async (data) => {
     const messageData = {
       sender: user.userId,
       senderName: user.userName,
-      senderRole: user.userRole || 'student', // Provide default value
+      senderRole: user.userRole, 
       content: sanitizedContent,
       classId: user.classId,
       type: data.type || 'message'
     };
 
-    // Additional validation
-    if (!messageData.senderRole) {
-      console.error('senderRole is still missing after assignment:', messageData);
-      sendError(socket, 'User role validation failed', 'VALIDATION_ERROR');
-      return;
-    }
-
-    console.log('Message data to save:', messageData); // Debug log
+    console.log('Saving message with data:', messageData);
 
     const newMessage = new Message(messageData);
     await newMessage.save();
@@ -223,24 +208,14 @@ socket.on('sendMessage', async (data) => {
     };
 
     io.to(`class_${user.classId}`).emit('newMessage', responseData);
+    console.log('Message sent successfully');
+    
   } catch (error) {
     console.error('Error saving message:', error);
     
     if (error.name === 'ValidationError') {
-      const validationErrors = Object.keys(error.errors).map(key => ({
-        field: key,
-        message: error.errors[key].message
-      }));
-      
-      console.error('Validation errors:', validationErrors);
-      
-      const errorMessage = validationErrors.length > 0 
-        ? `Validation failed: ${validationErrors[0].message}`
-        : 'Invalid message format';
-        
-      sendError(socket, errorMessage, 'VALIDATION_ERROR');
-    } else if (error.name === 'MongoError') {
-      sendError(socket, 'Database error, please try again', 'DATABASE_ERROR');
+      console.error('Validation errors:', error.errors);
+      sendError(socket, `Validation failed: ${error.message}`, 'VALIDATION_ERROR');
     } else {
       sendError(socket, 'Failed to send message', 'SERVER_ERROR');
     }
