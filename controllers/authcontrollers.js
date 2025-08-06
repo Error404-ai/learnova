@@ -84,7 +84,6 @@ exports.resendOTP = async (req, res) => {
         res.status(500).json({ message: 'Error resending OTP', error: error.message });
     }
 };
-
 // Verify OTP API 
 exports.verifyOTP = async (req, res) => {
     const { otp } = req.body;
@@ -106,7 +105,12 @@ exports.verifyOTP = async (req, res) => {
         await storeRefreshToken(user._id, refreshToken);
 
         await OTP.deleteOne({ otp });  
-        res.status(200).json({ message: 'OTP verified successfully', accessToken, refreshToken });
+        res.status(200).json({ 
+            message: 'OTP verified successfully', 
+            userId: user._id,
+            accessToken, 
+            refreshToken 
+        });
     } catch (error) {
         res.status(500).json({ message: 'Error verifying OTP', error: error.message });
     }
@@ -222,7 +226,12 @@ exports.login = async (req, res) => {
         const { accessToken, refreshToken } = generateTokens(user._id, user.email);
         await storeRefreshToken(user._id, refreshToken);
 
-        res.status(200).json({ message: 'Login successful', accessToken, refreshToken });
+        res.status(200).json({ 
+            message: 'Login successful', 
+            userId: user._id,
+            accessToken, 
+            refreshToken 
+        });
     } catch (error) {
         res.status(500).json({ message: 'Server error', error: error.message });
     }
