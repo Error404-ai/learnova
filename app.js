@@ -322,7 +322,13 @@ app.use(
     directives: {
       defaultSrc: ["'self'"],
       scriptSrc: ["'self'", "https://cdn.socket.io"],
-      connectSrc: ["'self'", "ws:", "wss:", "https://project2-zphf.onrender.com"],
+      connectSrc: [
+        "'self'", 
+        "ws:", 
+        "wss:", 
+        "http://localhost:5000", 
+        "https://project2-zphf.onrender.com"
+      ],
     },
   })
 );
