@@ -125,20 +125,25 @@ io.use(async (socket, next) => {
 });
 
 io.on('connection', (socket) => {
+  console.log(`User connected: ${socket.userName} (${socket.userRole}) - Socket ID: ${socket.id}`);
+  
   socket.on('joinClass', (data) => {
     const userId = socket.userId;
     const userName = socket.userName;
     const userRole = socket.userRole;
     const classId = data.classId;
+    
     if (!classId) {
       sendError(socket, 'Class ID is required', 'VALIDATION_ERROR');
       return;
     }
+ 
     Array.from(socket.rooms).forEach(room => {
       if (room !== socket.id) {
         socket.leave(room);
       }
     });
+    
     socket.join(`class_${classId}`);
     activeUsers.set(socket.id, {
       userId,
@@ -147,115 +152,154 @@ io.on('connection', (socket) => {
       userRole,
       joinedAt: new Date()
     });
+    
     if (!classRooms.has(classId)) {
       classRooms.set(classId, new Set());
     }
     classRooms.get(classId).add(socket.id);
+    
     broadcastActiveUsers(classId);
     sendClassMessages(socket, classId);
+    
+    console.log(`User ${userName} joined class ${classId} as ${userRole}`);
   });
 
-socket.on('sendMessage', async (data) => {
-  const user = {
-    userId: socket.userId,
-    userName: socket.userName,
-    userRole: socket.userRole || 'student', // Default to 'student' if missing
-    classId: activeUsers.get(socket.id)?.classId
-  };
-
-  if (!user.classId) {
-    sendError(socket, 'You must join a class first', 'CLASS_ERROR');
-    return;
-  }
-
-  const sanitizedContent = sanitizeInput(data.content);
-  if (!sanitizedContent) {
-    sendError(socket, 'Message content is required', 'VALIDATION_ERROR');
-    return;
-  }
-
-  if (!validateMessageRate(user.userId)) {
-    sendError(socket, 'Rate limit exceeded', 'RATE_LIMIT_ERROR');
-    return;
-  }
-
-  try {
-    const messageData = {
-      sender: user.userId,
-      senderName: user.userName,
-      senderRole: user.userRole, 
-      content: sanitizedContent,
-      classId: user.classId,
-      type: data.type || 'message'
+  socket.on('sendMessage', async (data) => {
+    const user = {
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole || 'student',
+      classId: activeUsers.get(socket.id)?.classId
     };
 
-    console.log('Saving message with data:', messageData);
-
-    const newMessage = new Message(messageData);
-    await newMessage.save();
-
-    const responseData = {
-      _id: newMessage._id,
-      sender: {
-        _id: user.userId,
-        name: user.userName,
-        role: user.userRole,
-      },
-      content: newMessage.content,
-      classId: user.classId,
-      timestamp: newMessage.timestamp,
-      type: newMessage.type
-    };
-
-    io.to(`class_${user.classId}`).emit('newMessage', responseData);
-    console.log('Message sent successfully');
-    
-  } catch (error) {
-    console.error('Error saving message:', error);
-    
-    if (error.name === 'ValidationError') {
-      console.error('Validation errors:', error.errors);
-      sendError(socket, `Validation failed: ${error.message}`, 'VALIDATION_ERROR');
-    } else {
-      sendError(socket, 'Failed to send message', 'SERVER_ERROR');
+    if (!user.classId) {
+      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+      return;
     }
-  }
-});
+
+    const sanitizedContent = sanitizeInput(data.content);
+    if (!sanitizedContent) {
+      sendError(socket, 'Message content is required', 'VALIDATION_ERROR');
+      return;
+    }
+
+    if (!validateMessageRate(user.userId)) {
+      sendError(socket, 'Rate limit exceeded', 'RATE_LIMIT_ERROR');
+      return;
+    }
+
+    try {
+      const messageData = {
+        sender: user.userId,
+        senderName: user.userName,
+        senderRole: user.userRole, 
+        content: sanitizedContent,
+        classId: user.classId,
+        type: data.type || 'message'
+      };
+
+      console.log('Saving message with data:', messageData);
+
+      const newMessage = new Message(messageData);
+      await newMessage.save();
+
+      const responseData = {
+        _id: newMessage._id,
+        sender: {
+          _id: user.userId,
+          name: user.userName,
+          role: user.userRole,
+        },
+        content: newMessage.content,
+        classId: user.classId,
+        timestamp: newMessage.timestamp,
+        type: newMessage.type
+      };
+
+      io.to(`class_${user.classId}`).emit('newMessage', responseData);
+      console.log('Message sent successfully');
+      
+    } catch (error) {
+      console.error('Error saving message:', error);
+      
+      if (error.name === 'ValidationError') {
+        console.error('Validation errors:', error.errors);
+        sendError(socket, `Validation failed: ${error.message}`, 'VALIDATION_ERROR');
+      } else {
+        sendError(socket, 'Failed to send message', 'SERVER_ERROR');
+      }
+    }
+  });
 
   socket.on('send_announcement', async (data) => {
-    if (socket.userRole !== 'teacher') {
+    console.log(`sendAnnouncement called with:`, {
+      classId: data.classId,
+      message: data.message,
+      description: data.description,
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole
+    });
+
+    // Check if user is a teacher
+    if (!socket.userRole || socket.userRole.toLowerCase() !== 'teacher') {
+      console.log(`Permission denied - User role: ${socket.userRole}`);
       sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
       return;
     }
+
     const user = activeUsers.get(socket.id);
     const sanitizedMessage = sanitizeInput(data.message);
+    
     if (!sanitizedMessage) {
       sendError(socket, 'Announcement message is required', 'VALIDATION_ERROR');
       return;
     }
-    const announcementData = {
-      id: Date.now().toString(),
-      userId: socket.userId,
-      userName: socket.userName,
-      userRole: socket.userRole,
-      message: sanitizedMessage,
-      classId: user?.classId,
-      timestamp: new Date(),
-      type: 'announcement',
-      urgent: data.urgent || false
-    };
-    if (user?.classId) {
+
+    if (!user?.classId) {
+      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+      return;
+    }
+
+    try {
+      const announcementData = {
+        id: Date.now().toString(),
+        userId: socket.userId,
+        userName: socket.userName,
+        userRole: socket.userRole,
+        message: sanitizedMessage,
+        description: data.description ? sanitizeInput(data.description) : undefined,
+        classId: user.classId,
+        timestamp: new Date(),
+        type: 'announcement',
+        urgent: data.urgent || false
+      };
+
+      console.log('Announcement sent:', announcementData);
+      
       io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
+      
+      socket.emit('announcement_sent', { 
+        success: true, 
+        message: 'Announcement sent successfully',
+        announcementId: announcementData.id 
+      });
+      
+    } catch (error) {
+      console.error('Error sending announcement:', error);
+      sendError(socket, 'Failed to send announcement', 'SERVER_ERROR');
     }
   });
 
   socket.on('ask_question', (data) => {
     const user = activeUsers.get(socket.id);
     const sanitizedQuestion = sanitizeInput(data.question);
+    
     if (!sanitizedQuestion) {
       sendError(socket, 'Question is required', 'VALIDATION_ERROR');
       return;
     }
+    
     const questionData = {
       id: Date.now().toString(),
       userId: socket.userId,
@@ -267,20 +311,23 @@ socket.on('sendMessage', async (data) => {
       type: 'question',
       isAnonymous: data.isAnonymous || false
     };
+    
     if (user?.classId) {
       io.to(`class_${user.classId}`).emit('receive_question', questionData);
     }
   });
 
   socket.on('notify_assignment', (data) => {
-    if (socket.userRole !== 'teacher') {
+    if (!socket.userRole || socket.userRole.toLowerCase() !== 'teacher') {
       sendError(socket, 'Only teachers can send assignment notifications', 'PERMISSION_ERROR');
       return;
     }
+    
     if (!data.assignmentId || !data.title) {
       sendError(socket, 'Assignment ID and title are required', 'VALIDATION_ERROR');
       return;
     }
+    
     const user = activeUsers.get(socket.id);
     const notificationData = {
       id: Date.now().toString(),
@@ -292,12 +339,14 @@ socket.on('sendMessage', async (data) => {
       timestamp: new Date(),
       teacherName: socket.userName
     };
+    
     if (user?.classId) {
       socket.to(`class_${user.classId}`).emit('assignment_notification', notificationData);
     }
   });
 
   socket.on('disconnect', () => {
+    console.log(`User disconnected: ${socket.userName} - Socket ID: ${socket.id}`);
     const user = activeUsers.get(socket.id);
     if (user) {
       if (classRooms.has(user.classId)) {
@@ -317,7 +366,6 @@ socket.on('sendMessage', async (data) => {
     console.error('Socket error:', error);
   });
 });
-
 app.set('io', io);
 
 const allowedOrigins = [
