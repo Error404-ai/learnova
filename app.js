@@ -18,7 +18,6 @@ const server = http.createServer(app);
 
 const Message = require('./models/classMessage');
 const User = require('./models/User');
-const meetingRoutes = require('./routes/meetingRoutes');
 
 // Socket.IO configuration
 const io = new Server(server, {
@@ -473,7 +472,7 @@ const authRoutes = require('./routes/auth');
 const userRoutes = require("./routes/userroutes");
 const classRoutes = require('./routes/classroutes');
 const assignmentRoutes = require('./routes/assignmentroutes');
-const meetingRoutes = require('./routes/meetingRoutes')
+const meetingRoutes = require('./routes/meetingRoutes');
 
 app.use('/api/auth', authRoutes);
 app.use("/user", userRoutes);
