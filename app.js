@@ -232,22 +232,23 @@ io.on('connection', (socket) => {
   });
 
   socket.on('send_announcement', async (data) => {
-    console.log(`sendAnnouncement called with:`, {
-      classId: data.classId,
-      message: data.message,
-      description: data.description,
-      userId: socket.userId,
-      userName: socket.userName,
-      userRole: socket.userRole
-    });
+  console.log(`sendAnnouncement called with:`, {
+    classId: data.classId,
+    message: data.message,
+    description: data.description,
+    userId: socket.userId,
+    userName: socket.userName,
+    userRole: socket.userRole
+  });
 
-    // Check if user is a teacher
-    if (!socket.userRole || socket.userRole.toLowerCase() !== 'teacher') {
-      console.log(`Permission denied - User role: ${socket.userRole}`);
-      sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
-      return;
-    }
-
+  // Remove or comment out this block to allow all roles to send announcements
+  /*
+  if (!socket.userRole || socket.userRole.toLowerCase() !== 'teacher') {
+    console.log(`Permission denied - User role: ${socket.userRole}`);
+    sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
+    return;
+  }
+  */
     const user = activeUsers.get(socket.id);
     const sanitizedMessage = sanitizeInput(data.message);
     
