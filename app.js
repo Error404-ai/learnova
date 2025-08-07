@@ -266,7 +266,7 @@ io.on('connection', (socket) => {
         id: Date.now().toString(),
         userId: socket.userId,
         userName: socket.userName,
-        userRole: socket.userRole,
+         userRole: 'teacher',
         message: sanitizedMessage,
         description: data.description ? sanitizeInput(data.description) : undefined,
         classId: user.classId,
