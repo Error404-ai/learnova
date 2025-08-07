@@ -180,10 +180,10 @@ exports.getMeetingById = async (req, res) => {
     const { meetingId } = req.params;
     const userId = req.user.id;
 
-    const meeting = await Meeting.findById(meetingId)
-      .populate('scheduledBy', 'name email')
-      .populate('classId', 'className subject')
-      .populate('attendees.userId', 'name email');
+   const meeting = await Meeting.findById(meetingId)
+  .populate('scheduledBy', 'name email')
+  .populate('classId', 'className subject createdBy')
+  .populate('attendees.userId', 'name email');
 
     if (!meeting) {
       return res.status(404).json({
