@@ -231,7 +231,7 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('send_announcement', async (data) => {
+ socket.on('send_announcement', async (data) => {
   console.log(`sendAnnouncement called with:`, {
     classId: data.classId,
     message: data.message,
@@ -241,56 +241,74 @@ io.on('connection', (socket) => {
     userRole: socket.userRole
   });
 
-  // Remove or comment out this block to allow all roles to send announcements
-  /*
-  if (!socket.userRole || socket.userRole.toLowerCase() !== 'teacher') {
-    console.log(`Permission denied - User role: ${socket.userRole}`);
-    sendError(socket, 'Only teachers can send announcements', 'PERMISSION_ERROR');
+  const user = activeUsers.get(socket.id);
+  const sanitizedMessage = sanitizeInput(data.message);
+  
+  if (!sanitizedMessage) {
+    sendError(socket, 'Announcement message is required', 'VALIDATION_ERROR');
     return;
   }
-  */
-    const user = activeUsers.get(socket.id);
-    const sanitizedMessage = sanitizeInput(data.message);
+
+  if (!user?.classId) {
+    sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+    return;
+  }
+
+  try {
+    // Store announcement in database using the Message model
+    const announcementData = {
+      sender: socket.userId,
+      senderName: socket.userName,
+      senderRole: socket.userRole || 'teacher',
+      content: sanitizedMessage,
+      classId: user.classId,
+      type: 'announcement',
+      // Store description in content if needed, or add description field to your Message model
+      description: data.description ? sanitizeInput(data.description) : undefined
+    };
+
+    console.log('Saving announcement with data:', announcementData);
+
+    const newAnnouncement = new Message(announcementData);
+    await newAnnouncement.save();
+
+    // Prepare data for real-time broadcast
+    const broadcastData = {
+      _id: newAnnouncement._id,
+      id: Date.now().toString(), // Keep for compatibility
+      userId: socket.userId,
+      userName: socket.userName,
+      userRole: socket.userRole || 'teacher',
+      message: sanitizedMessage,
+      content: sanitizedMessage, // Add this for compatibility with your notifications
+      description: data.description ? sanitizeInput(data.description) : undefined,
+      classId: user.classId,
+      timestamp: newAnnouncement.timestamp,
+      type: 'announcement',
+      urgent: data.urgent || false,
+      sender: {
+        _id: socket.userId,
+        name: socket.userName,
+        role: socket.userRole || 'teacher'
+      }
+    };
+
+    console.log('Announcement saved and broadcasting:', broadcastData);
     
-    if (!sanitizedMessage) {
-      sendError(socket, 'Announcement message is required', 'VALIDATION_ERROR');
-      return;
-    }
-
-    if (!user?.classId) {
-      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
-      return;
-    }
-
-    try {
-      const announcementData = {
-        id: Date.now().toString(),
-        userId: socket.userId,
-        userName: socket.userName,
-         userRole: 'teacher',
-        message: sanitizedMessage,
-        description: data.description ? sanitizeInput(data.description) : undefined,
-        classId: user.classId,
-        timestamp: new Date(),
-        type: 'announcement',
-        urgent: data.urgent || false
-      };
-
-      console.log('Announcement sent:', announcementData);
-      
-      io.to(`class_${user.classId}`).emit('receive_announcement', announcementData);
-      
-      socket.emit('announcement_sent', { 
-        success: true, 
-        message: 'Announcement sent successfully',
-        announcementId: announcementData.id 
-      });
-      
-    } catch (error) {
-      console.error('Error sending announcement:', error);
-      sendError(socket, 'Failed to send announcement', 'SERVER_ERROR');
-    }
-  });
+    // Broadcast to all users in the class
+    io.to(`class_${user.classId}`).emit('receive_announcement', broadcastData);
+    
+    socket.emit('announcement_sent', { 
+      success: true, 
+      message: 'Announcement sent successfully',
+      announcementId: broadcastData._id 
+    });
+    
+  } catch (error) {
+    console.error('Error saving/sending announcement:', error);
+    sendError(socket, 'Failed to send announcement', 'SERVER_ERROR');
+  }
+});
 
   socket.on('ask_question', (data) => {
     const user = activeUsers.get(socket.id);
