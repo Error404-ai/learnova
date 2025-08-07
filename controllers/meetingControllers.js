@@ -27,17 +27,13 @@ exports.scheduleMeeting = async (req, res) => {
       duration,
       isPrivate,
       maxParticipants,
-      recordingEnabled,
-      agenda,
-      materials,
-      reminders,
-      autoJoinEnabled,
-      waitingRoomEnabled,
       chatEnabled,
       screenShareEnabled
     } = req.body;
 
     const userId = req.user.id;
+    
+    // Validation
     if (!title || !classId || !scheduledDate || !duration) {
       return res.status(400).json({
         success: false,
@@ -52,6 +48,7 @@ exports.scheduleMeeting = async (req, res) => {
       });
     }
 
+    // Check class exists and user has permission
     const classObj = await Class.findById(classId);
     if (!classObj) {
       return res.status(404).json({
@@ -59,6 +56,7 @@ exports.scheduleMeeting = async (req, res) => {
         message: 'Class not found'
       });
     }
+
     const hasPermission = classObj.createdBy.toString() === userId ||
                          classObj.coordinators.includes(userId);
 
@@ -68,8 +66,10 @@ exports.scheduleMeeting = async (req, res) => {
         message: 'Only class creators and coordinators can schedule meetings'
       });
     }
-    // Generate unique room ID for the meeting
+
+    // Generate unique room ID
     const roomId = generateMeetingRoomId();
+    
     // Create new meeting
     const newMeeting = new Meeting({
       title,
@@ -79,27 +79,10 @@ exports.scheduleMeeting = async (req, res) => {
       scheduledDate: new Date(scheduledDate),
       duration,
       roomId,
-      meetingType: 'integrated', // Always integrated now
       isPrivate: isPrivate || false,
       maxParticipants: maxParticipants || 50,
-      recordingEnabled: recordingEnabled || false,
-      autoJoinEnabled: autoJoinEnabled || false,
-      waitingRoomEnabled: waitingRoomEnabled || true,
       chatEnabled: chatEnabled !== false, // Default true
-      screenShareEnabled: screenShareEnabled !== false, // Default true
-      agenda: agenda || [],
-      materials: materials || [],
-      reminders: reminders || [
-        { type: 'notification', time: 15 }, // 15 minutes before
-        { type: 'notification', time: 5 }   // 5 minutes before
-      ],
-      // Video call settings
-      videoSettings: {
-        cameraEnabled: true,
-        micEnabled: true,
-        quality: 'hd', // sd, hd, fhd
-        layout: 'grid' // grid, speaker, presentation
-      }
+      screenShareEnabled: screenShareEnabled !== false // Default true
     });
 
     await newMeeting.save();
@@ -155,6 +138,7 @@ exports.getClassMeetings = async (req, res) => {
     }
 
     let query = { classId };
+    
     if (status) {
       query.status = status;
     }
@@ -264,7 +248,7 @@ exports.cancelMeeting = async (req, res) => {
       });
     }
 
-    // Can't cancel active meetings - they need to be ended
+    // Can't cancel active meetings
     if (meeting.status === 'active') {
       return res.status(400).json({
         success: false,
@@ -276,7 +260,7 @@ exports.cancelMeeting = async (req, res) => {
     meeting.cancelledAt = new Date();
     await meeting.save();
 
-    // Emit cancellation notification via socket
+    // Emit cancellation notification via socket (if available)
     const io = req.app.get('io');
     if (io) {
       io.to(`class_${meeting.classId}`).emit('meeting_cancelled', {
@@ -302,7 +286,7 @@ exports.cancelMeeting = async (req, res) => {
   }
 };
 
-// Join meeting (get access token and room details)
+// Join meeting
 exports.joinMeeting = async (req, res) => {
   try {
     const { meetingId } = req.params;
@@ -368,10 +352,8 @@ exports.joinMeeting = async (req, res) => {
           title: meeting.title,
           roomId: meeting.roomId,
           status: meeting.status,
-          videoSettings: meeting.videoSettings,
           chatEnabled: meeting.chatEnabled,
-          screenShareEnabled: meeting.screenShareEnabled,
-          recordingEnabled: meeting.recordingEnabled
+          screenShareEnabled: meeting.screenShareEnabled
         },
         accessToken: accessToken.token,
         tokenExpires: accessToken.expires,
@@ -386,7 +368,7 @@ exports.joinMeeting = async (req, res) => {
       joinedAt: new Date()
     });
 
-    // Update meeting status to active if it's the first attendee or scheduled time has passed
+    // Update meeting status to active if it's the first attendee
     if (meeting.status === 'scheduled') {
       meeting.status = 'active';
       meeting.startedAt = new Date();
@@ -400,7 +382,7 @@ exports.joinMeeting = async (req, res) => {
     // Generate access token for video call
     const accessToken = generateMeetingToken(userId, meetingId, userRole);
 
-    // Emit join notification via socket
+    // Emit join notification via socket (if available)
     const io = req.app.get('io');
     if (io) {
       io.to(`class_${meeting.classId._id}`).emit('user_joined_meeting', {
@@ -423,11 +405,8 @@ exports.joinMeeting = async (req, res) => {
         status: meeting.status,
         scheduledBy: meeting.scheduledBy,
         classId: meeting.classId,
-        videoSettings: meeting.videoSettings,
         chatEnabled: meeting.chatEnabled,
-        screenShareEnabled: meeting.screenShareEnabled,
-        recordingEnabled: meeting.recordingEnabled,
-        waitingRoomEnabled: meeting.waitingRoomEnabled
+        screenShareEnabled: meeting.screenShareEnabled
       },
       accessToken: accessToken.token,
       tokenExpires: accessToken.expires,
@@ -491,7 +470,7 @@ exports.leaveMeeting = async (req, res) => {
 
     await meeting.save();
 
-    // Emit leave notification via socket
+    // Emit leave notification via socket (if available)
     const io = req.app.get('io');
     if (io) {
       io.to(`class_${meeting.classId}`).emit('user_left_meeting', {
@@ -534,7 +513,7 @@ exports.endMeeting = async (req, res) => {
       });
     }
 
-    // Check permission (only meeting creator or class coordinator can end meeting)
+    // Check permission
     const classObj = await Class.findById(meeting.classId);
     const hasPermission = meeting.scheduledBy.toString() === userId ||
                          classObj.createdBy.toString() === userId ||
@@ -572,7 +551,7 @@ exports.endMeeting = async (req, res) => {
 
     await meeting.save();
 
-    // Emit meeting ended notification
+    // Emit meeting ended notification (if available)
     const io = req.app.get('io');
     if (io) {
       io.to(`class_${meeting.classId}`).emit('meeting_ended', {
@@ -617,6 +596,7 @@ exports.getMeetingStats = async (req, res) => {
       });
     }
 
+    // Check permission
     const classObj = await Class.findById(meeting.classId._id);
     const hasPermission = meeting.scheduledBy._id.toString() === userId ||
                          classObj.createdBy.toString() === userId ||
@@ -635,8 +615,6 @@ exports.getMeetingStats = async (req, res) => {
       ? Math.round(meeting.attendees.reduce((sum, att) => sum + (att.duration || 0), 0) / totalAttendees)
       : 0;
     
-    const maxConcurrentUsers = meeting.attendees.length; // This would need real-time tracking in production
-    
     res.status(200).json({
       success: true,
       stats: {
@@ -648,7 +626,6 @@ exports.getMeetingStats = async (req, res) => {
         status: meeting.status,
         totalAttendees,
         averageDuration,
-        maxConcurrentUsers,
         actualDuration: meeting.actualDuration,
         attendees: meeting.attendees.map(att => ({
           user: att.userId,

@@ -5,12 +5,12 @@ const meetingSchema = new mongoose.Schema({
     type: String,
     required: true,
     trim: true,
-    maxlength: 200
+    maxlength: 100
   },
   description: {
     type: String,
     trim: true,
-    maxlength: 1000
+    maxlength: 500
   },
   classId: {
     type: mongoose.Schema.Types.ObjectId,
@@ -30,112 +30,94 @@ const meetingSchema = new mongoose.Schema({
     type: Number, // Duration in minutes
     required: true,
     min: 15,
-    max: 480 // Max 8 hours
+    max: 480 // 8 hours max
   },
-  meetingType: {
+  roomId: {
     type: String,
-    enum: ['google-meet', 'zoom', 'teams', 'manual-link'],
-    required: true
-  },
-  meetingLink: {
-    type: String,
-    required: true
-  },
-  meetingId: {
-    type: String, // For Google Meet or Zoom meeting ID
-    required: false
-  },
-  password: {
-    type: String, // For Zoom meetings
-    required: false
+    required: true,
+    unique: true
   },
   status: {
     type: String,
     enum: ['scheduled', 'active', 'completed', 'cancelled'],
     default: 'scheduled'
   },
-  attendees: [{
-    userId: {
-      type: mongoose.Schema.Types.ObjectId,
-      ref: 'User'
-    },
-    joinedAt: Date,
-    leftAt: Date,
-    duration: Number // Duration in minutes
-  }],
-  recurring: {
-    enabled: {
-      type: Boolean,
-      default: false
-    },
-    frequency: {
-      type: String,
-      enum: ['daily', 'weekly', 'monthly'],
-      required: false
-    },
-    endDate: {
-      type: Date,
-      required: false
-    }
-  },
-  reminders: [{
-    type: {
-      type: String,
-      enum: ['email', 'notification', 'sms'],
-      required: true
-    },
-    time: {
-      type: Number, // Minutes before meeting
-      required: true
-    },
-    sent: {
-      type: Boolean,
-      default: false
-    }
-  }],
+  // Basic meeting settings
   isPrivate: {
     type: Boolean,
     default: false
   },
   maxParticipants: {
     type: Number,
-    default: 100
+    default: 50,
+    min: 2,
+    max: 100
   },
-  recordingEnabled: {
+  chatEnabled: {
     type: Boolean,
-    default: false
+    default: true
   },
-  recordingUrl: {
-    type: String,
-    required: false
+  screenShareEnabled: {
+    type: Boolean,
+    default: true
   },
-  agenda: [{
-    title: String,
-    duration: Number, // Duration in minutes
-    description: String
+  // Attendee tracking
+  attendees: [{
+    userId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      required: true
+    },
+    joinedAt: {
+      type: Date,
+      required: true
+    },
+    leftAt: {
+      type: Date
+    },
+    duration: {
+      type: Number // Duration in minutes
+    }
   }],
-  materials: [{
-    name: String,
-    url: String,
-    type: String // 'document', 'presentation', 'video', etc.
-  }],
-  createdAt: {
-    type: Date,
-    default: Date.now
+  // Meeting timing
+  startedAt: {
+    type: Date
   },
-  updatedAt: {
-    type: Date,
-    default: Date.now
+  endedAt: {
+    type: Date
+  },
+  actualDuration: {
+    type: Number // Actual duration in minutes
+  },
+  cancelledAt: {
+    type: Date
   }
+}, {
+  timestamps: true
 });
 
+
+// Indexes for better query performance
+meetingSchema.index({ classId: 1, scheduledDate: 1 });
+meetingSchema.index({ status: 1, scheduledDate: 1 });
+meetingSchema.index({ scheduledBy: 1 });
+
+meetingSchema.virtual('isLive').get(function() {
+  return this.status === 'active';
+});
+
+// Virtual for getting active participants count
+meetingSchema.virtual('activeParticipantsCount').get(function() {
+  return this.attendees.filter(attendee => !attendee.leftAt).length;
+});
+
+
+// Pre-save middleware to validate scheduled date
 meetingSchema.pre('save', function(next) {
-  this.updatedAt = Date.now();
+  if (this.isNew && this.scheduledDate <= new Date()) {
+    next(new Error('Meeting must be scheduled for a future date'));
+  }
   next();
 });
-
-meetingSchema.index({ classId: 1, scheduledDate: 1 });
-meetingSchema.index({ scheduledBy: 1 });
-meetingSchema.index({ status: 1 });
 
 module.exports = mongoose.model('Meeting', meetingSchema);

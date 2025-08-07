@@ -1,16 +1,29 @@
-// routes/meetingRoutes.js
 const express = require('express');
 const router = express.Router();
-const meetingController = require('../controllers/meetingControllers');
-const { protect } = require('../middlewares/authMiddleware');
-router.use(protect);
-router.post('/schedule', meetingController.scheduleMeeting);
-router.get('/class/:classId', meetingController.getClassMeetings);
-router.get('/upcoming', meetingController.getUserUpcomingMeetings);
-router.get('/:meetingId', meetingController.getMeetingById);
-router.put('/:meetingId', meetingController.updateMeeting);
-router.patch('/:meetingId/cancel', meetingController.cancelMeeting);
-router.post('/:meetingId/join', meetingController.joinMeeting);
-router.post('/:meetingId/leave', meetingController.leaveMeeting);
+const {
+  scheduleMeeting,
+  getClassMeetings,
+  getMeetingById,
+  cancelMeeting,
+  joinMeeting,
+  leaveMeeting,
+  endMeeting,
+  getMeetingStats
+} = require('../controllers/meetingControllers');
 
+const { protect } = require('../middlewares/authMiddleware');
+
+router.use(protect);
+
+// Meeting CRUD routes
+router.post('/schedule', scheduleMeeting);          
+router.get('/class/:classId', getClassMeetings);    
+router.get('/:meetingId', getMeetingById);         
+router.delete('/:meetingId/cancel', cancelMeeting); 
+
+// Meeting participation routes
+router.post('/:meetingId/join', joinMeeting);      
+router.post('/:meetingId/leave', leaveMeeting);    
+router.post('/:meetingId/end', endMeeting);         
+router.get('/:meetingId/stats', getMeetingStats);   
 module.exports = router;
