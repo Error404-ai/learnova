@@ -269,6 +269,102 @@ exports.getMeetingById = async (req, res) => {
   }
 };
 
+//start meeting
+exports.startMeeting = async (req, res) => {
+  try {
+    const { meetingId } = req.params;
+    const userId = req.user.id;
+
+    // Find the meeting
+    const meeting = await Meeting.findById(meetingId)
+      .populate('scheduledBy', 'name email')
+      .populate('classId', 'className subject createdBy coordinators');
+
+    if (!meeting) {
+      return res.status(404).json({
+        success: false,
+        message: 'Meeting not found'
+      });
+    }
+
+    // Check if user has permission to start the meeting
+    const canStart = meeting.scheduledBy._id.toString() === userId ||
+                    meeting.classId.createdBy.toString() === userId ||
+                    meeting.classId.coordinators.includes(userId);
+
+    if (!canStart) {
+      return res.status(403).json({
+        success: false,
+        message: 'Only the meeting creator or class coordinators can start the meeting'
+      });
+    }
+
+    // Check if meeting is already active or completed
+    if (meeting.status === 'active') {
+      return res.status(400).json({
+        success: false,
+        message: 'Meeting is already active',
+        meeting: formatMeetingWithIST(meeting)
+      });
+    }
+
+    if (meeting.status === 'completed') {
+      return res.status(400).json({
+        success: false,
+        message: 'Meeting has already ended'
+      });
+    }
+
+    if (meeting.status === 'cancelled') {
+      return res.status(400).json({
+        success: false,
+        message: 'Meeting has been cancelled'
+      });
+    }
+
+    // Update meeting status to active
+    meeting.status = 'active';
+    meeting.startedAt = new Date(); // Store in UTC
+    meeting.startedBy = userId;
+
+    await meeting.save();
+
+    // Generate meeting link and token for host
+    const meetingLink = `/meet/lecture/${meetingId}`;
+    const hostToken = generateMeetingToken(userId, meetingId, 'host');
+
+    // Emit socket event to notify all class members (if socket.io is available)
+    if (req.io) {
+      req.io.to(meeting.classId._id.toString()).emit('meeting_started', {
+        meetingId: meeting._id,
+        title: meeting.title,
+        meetingLink,
+        classId: meeting.classId._id,
+        startedBy: meeting.scheduledBy.name,
+        roomId: meeting.roomId
+      });
+    }
+
+    res.status(200).json({
+      success: true,
+      message: 'Meeting started successfully',
+      meeting: formatMeetingWithIST(meeting),
+      meetingLink,
+      roomId: meeting.roomId,
+      hostToken,
+      timezone: 'IST (UTC+5:30)'
+    });
+
+  } catch (error) {
+    console.error('Error starting meeting:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to start meeting',
+      error: error.message
+    });
+  }
+};
+
 // Cancel meeting
 exports.cancelMeeting = async (req, res) => {
   try {

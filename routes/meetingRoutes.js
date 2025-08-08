@@ -8,7 +8,7 @@ const {
   joinMeeting,
   leaveMeeting,
   endMeeting,
-  getMeetingStats
+  getMeetingStats,startMeeting
 } = require('../controllers/meetingControllers');
 
 const { protect } = require('../middlewares/authMiddleware');
@@ -22,6 +22,7 @@ router.get('/:meetingId', getMeetingById);
 router.delete('/:meetingId/cancel', cancelMeeting); 
 
 // Meeting participation routes
+router.post('/:meetingId/start', startMeeting); 
 router.post('/:meetingId/join', joinMeeting);      
 router.post('/:meetingId/leave', leaveMeeting);    
 router.post('/:meetingId/end', endMeeting);         
