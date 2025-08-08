@@ -3,6 +3,44 @@ const Class = require('../models/Class');
 const User = require('../models/User');
 const { v4: uuidv4 } = require('uuid');
 
+// Helper function to convert UTC date to IST string
+const convertToIST = (date) => {
+  if (!date) return null;
+  
+  const utcDate = new Date(date);
+  // Add 5 hours 30 minutes for IST
+  const istDate = new Date(utcDate.getTime() + (5.5 * 60 * 60 * 1000));
+  return istDate.toISOString();
+};
+
+// Helper function to convert IST input to UTC for database storage
+const convertISTToUTC = (istDateString) => {
+  const istDate = new Date(istDateString);
+  // Subtract 5 hours 30 minutes to convert IST to UTC
+  const utcDate = new Date(istDate.getTime() - (5.5 * 60 * 60 * 1000));
+  return utcDate;
+};
+
+// Helper function to format meeting data with IST times
+const formatMeetingWithIST = (meeting) => {
+  const meetingObj = meeting.toObject ? meeting.toObject() : meeting;
+  
+  return {
+    ...meetingObj,
+    scheduledDate: convertToIST(meetingObj.scheduledDate),
+    startedAt: convertToIST(meetingObj.startedAt),
+    endedAt: convertToIST(meetingObj.endedAt),
+    cancelledAt: convertToIST(meetingObj.cancelledAt),
+    createdAt: convertToIST(meetingObj.createdAt),
+    updatedAt: convertToIST(meetingObj.updatedAt),
+    attendees: meetingObj.attendees?.map(attendee => ({
+      ...attendee,
+      joinedAt: convertToIST(attendee.joinedAt),
+      leftAt: convertToIST(attendee.leftAt)
+    })) || []
+  };
+};
+
 // Helper function to generate unique meeting room ID
 const generateMeetingRoomId = () => {
   return `room_${uuidv4().replace(/-/g, '').substring(0, 12)}`;
@@ -10,9 +48,10 @@ const generateMeetingRoomId = () => {
 
 // Helper function to generate meeting access token (for future WebRTC integration)
 const generateMeetingToken = (userId, meetingId, role = 'participant') => {
+  const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours from now
   return {
     token: `${userId}_${meetingId}_${Date.now()}`,
-    expires: new Date(Date.now() + 2 * 60 * 60 * 1000) // 2 hours from now
+    expires: convertToIST(expiresAt)
   };
 };
 
@@ -23,7 +62,7 @@ exports.scheduleMeeting = async (req, res) => {
       title,
       description,
       classId,
-      scheduledDate,
+      scheduledDate, // Expected to be in IST from frontend
       duration,
       isPrivate,
       maxParticipants,
@@ -41,7 +80,10 @@ exports.scheduleMeeting = async (req, res) => {
       });
     }
 
-    if (new Date(scheduledDate) <= new Date()) {
+    // Convert IST input to UTC for comparison and storage
+    const scheduledDateUTC = convertISTToUTC(scheduledDate);
+    
+    if (scheduledDateUTC <= new Date()) {
       return res.status(400).json({
         success: false,
         message: 'Meeting must be scheduled for a future date'
@@ -70,13 +112,13 @@ exports.scheduleMeeting = async (req, res) => {
     // Generate unique room ID
     const roomId = generateMeetingRoomId();
     
-    // Create new meeting
+    // Create new meeting (store in UTC)
     const newMeeting = new Meeting({
       title,
       description,
       classId,
       scheduledBy: userId,
-      scheduledDate: new Date(scheduledDate),
+      scheduledDate: scheduledDateUTC,
       duration,
       roomId,
       isPrivate: isPrivate || false,
@@ -96,7 +138,7 @@ exports.scheduleMeeting = async (req, res) => {
     res.status(201).json({
       success: true,
       message: 'Meeting scheduled successfully',
-      meeting: newMeeting
+      meeting: formatMeetingWithIST(newMeeting)
     });
 
   } catch (error) {
@@ -143,13 +185,14 @@ exports.getClassMeetings = async (req, res) => {
       query.status = status;
     }
 
+    // For date filtering, we work with UTC in database but convert for comparison
     if (upcoming === 'true') {
-      query.scheduledDate = { $gte: new Date() };
+      query.scheduledDate = { $gte: new Date() }; // UTC comparison
       query.status = { $in: ['scheduled', 'active'] };
     }
 
     if (past === 'true') {
-      query.scheduledDate = { $lt: new Date() };
+      query.scheduledDate = { $lt: new Date() }; // UTC comparison  
       query.status = { $in: ['completed', 'cancelled'] };
     }
 
@@ -158,10 +201,14 @@ exports.getClassMeetings = async (req, res) => {
       .populate('classId', 'className subject')
       .sort({ scheduledDate: 1 });
 
+    // Convert all times to IST for frontend
+    const meetingsWithIST = meetings.map(meeting => formatMeetingWithIST(meeting));
+
     res.status(200).json({
       success: true,
-      meetings,
-      count: meetings.length
+      meetings: meetingsWithIST,
+      count: meetingsWithIST.length,
+      timezone: 'IST (UTC+5:30)'
     });
 
   } catch (error) {
@@ -180,10 +227,10 @@ exports.getMeetingById = async (req, res) => {
     const { meetingId } = req.params;
     const userId = req.user.id;
 
-   const meeting = await Meeting.findById(meetingId)
-  .populate('scheduledBy', 'name email')
-  .populate('classId', 'className subject createdBy')
-  .populate('attendees.userId', 'name email');
+    const meeting = await Meeting.findById(meetingId)
+      .populate('scheduledBy', 'name email')
+      .populate('classId', 'className subject createdBy')
+      .populate('attendees.userId', 'name email');
 
     if (!meeting) {
       return res.status(404).json({
@@ -208,7 +255,8 @@ exports.getMeetingById = async (req, res) => {
 
     res.status(200).json({
       success: true,
-      meeting
+      meeting: formatMeetingWithIST(meeting),
+      timezone: 'IST (UTC+5:30)'
     });
 
   } catch (error) {
@@ -267,13 +315,14 @@ exports.cancelMeeting = async (req, res) => {
         meetingId: meeting._id,
         title: meeting.title,
         message: 'Meeting has been cancelled',
-        timestamp: new Date()
+        timestamp: convertToIST(new Date())
       });
     }
 
     res.status(200).json({
       success: true,
-      message: 'Meeting cancelled successfully'
+      message: 'Meeting cancelled successfully',
+      cancelledAt: convertToIST(meeting.cancelledAt)
     });
 
   } catch (error) {
@@ -348,6 +397,7 @@ exports.joinMeeting = async (req, res) => {
         success: true,
         message: 'Already in meeting',
         meeting: {
+          ...formatMeetingWithIST(meeting),
           _id: meeting._id,
           title: meeting.title,
           roomId: meeting.roomId,
@@ -358,20 +408,22 @@ exports.joinMeeting = async (req, res) => {
         accessToken: accessToken.token,
         tokenExpires: accessToken.expires,
         userRole,
-        joinedAt: existingAttendee.joinedAt
+        joinedAt: convertToIST(existingAttendee.joinedAt),
+        timezone: 'IST (UTC+5:30)'
       });
     }
 
     // Add to attendees
+    const joinTime = new Date();
     meeting.attendees.push({
       userId,
-      joinedAt: new Date()
+      joinedAt: joinTime
     });
 
     // Update meeting status to active if it's the first attendee
     if (meeting.status === 'scheduled') {
       meeting.status = 'active';
-      meeting.startedAt = new Date();
+      meeting.startedAt = joinTime;
     }
 
     await meeting.save();
@@ -389,7 +441,7 @@ exports.joinMeeting = async (req, res) => {
         meetingId: meeting._id,
         userId,
         userName: req.user.name,
-        joinedAt: new Date(),
+        joinedAt: convertToIST(joinTime),
         activeParticipants: meeting.attendees.filter(att => !att.leftAt).length
       });
     }
@@ -398,6 +450,7 @@ exports.joinMeeting = async (req, res) => {
       success: true,
       message: 'Successfully joined the meeting',
       meeting: {
+        ...formatMeetingWithIST(meeting),
         _id: meeting._id,
         title: meeting.title,
         description: meeting.description,
@@ -411,7 +464,8 @@ exports.joinMeeting = async (req, res) => {
       accessToken: accessToken.token,
       tokenExpires: accessToken.expires,
       userRole,
-      activeParticipants: meeting.attendees.filter(att => !att.leftAt).length
+      activeParticipants: meeting.attendees.filter(att => !att.leftAt).length,
+      timezone: 'IST (UTC+5:30)'
     });
 
   } catch (error) {
@@ -451,19 +505,20 @@ exports.leaveMeeting = async (req, res) => {
     }
 
     // Update leave time and calculate duration
+    const leaveTime = new Date();
     const attendee = meeting.attendees[attendeeIndex];
-    attendee.leftAt = new Date();
-    attendee.duration = Math.round((attendee.leftAt - attendee.joinedAt) / 60000); // Duration in minutes
+    attendee.leftAt = leaveTime;
+    attendee.duration = Math.round((leaveTime - attendee.joinedAt) / 60000); // Duration in minutes
 
     // Check if this was the last participant
     const remainingParticipants = meeting.attendees.filter(att => !att.leftAt && att.userId.toString() !== userId).length;
     
     // Auto-end meeting if no participants left and it's been active for more than 5 minutes
     if (remainingParticipants === 0 && meeting.status === 'active') {
-      const meetingDuration = Math.round((new Date() - meeting.startedAt) / 60000);
+      const meetingDuration = Math.round((leaveTime - meeting.startedAt) / 60000);
       if (meetingDuration >= 5) {
         meeting.status = 'completed';
-        meeting.endedAt = new Date();
+        meeting.endedAt = leaveTime;
         meeting.actualDuration = meetingDuration;
       }
     }
@@ -476,7 +531,7 @@ exports.leaveMeeting = async (req, res) => {
       io.to(`class_${meeting.classId}`).emit('user_left_meeting', {
         meetingId: meeting._id,
         userId,
-        leftAt: attendee.leftAt,
+        leftAt: convertToIST(attendee.leftAt),
         duration: attendee.duration,
         activeParticipants: remainingParticipants
       });
@@ -485,8 +540,10 @@ exports.leaveMeeting = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Successfully left the meeting',
+      leftAt: convertToIST(attendee.leftAt),
       duration: attendee.duration,
-      activeParticipants: remainingParticipants
+      activeParticipants: remainingParticipants,
+      timezone: 'IST (UTC+5:30)'
     });
 
   } catch (error) {
@@ -534,19 +591,19 @@ exports.endMeeting = async (req, res) => {
     }
 
     // Update all active attendees to left
-    const now = new Date();
+    const endTime = new Date();
     meeting.attendees.forEach(attendee => {
       if (!attendee.leftAt) {
-        attendee.leftAt = now;
-        attendee.duration = Math.round((now - attendee.joinedAt) / 60000);
+        attendee.leftAt = endTime;
+        attendee.duration = Math.round((endTime - attendee.joinedAt) / 60000);
       }
     });
 
     // Mark meeting as completed
     meeting.status = 'completed';
-    meeting.endedAt = now;
+    meeting.endedAt = endTime;
     if (meeting.startedAt) {
-      meeting.actualDuration = Math.round((now - meeting.startedAt) / 60000);
+      meeting.actualDuration = Math.round((endTime - meeting.startedAt) / 60000);
     }
 
     await meeting.save();
@@ -557,7 +614,7 @@ exports.endMeeting = async (req, res) => {
       io.to(`class_${meeting.classId}`).emit('meeting_ended', {
         meetingId: meeting._id,
         endedBy: userId,
-        endedAt: now,
+        endedAt: convertToIST(endTime),
         message: 'Meeting has been ended by the moderator'
       });
     }
@@ -565,7 +622,9 @@ exports.endMeeting = async (req, res) => {
     res.status(200).json({
       success: true,
       message: 'Meeting ended successfully',
-      duration: meeting.actualDuration
+      endedAt: convertToIST(meeting.endedAt),
+      duration: meeting.actualDuration,
+      timezone: 'IST (UTC+5:30)'
     });
 
   } catch (error) {
@@ -620,20 +679,21 @@ exports.getMeetingStats = async (req, res) => {
       stats: {
         meetingId: meeting._id,
         title: meeting.title,
-        scheduledDate: meeting.scheduledDate,
-        startedAt: meeting.startedAt,
-        endedAt: meeting.endedAt,
+        scheduledDate: convertToIST(meeting.scheduledDate),
+        startedAt: convertToIST(meeting.startedAt),
+        endedAt: convertToIST(meeting.endedAt),
         status: meeting.status,
         totalAttendees,
         averageDuration,
         actualDuration: meeting.actualDuration,
         attendees: meeting.attendees.map(att => ({
           user: att.userId,
-          joinedAt: att.joinedAt,
-          leftAt: att.leftAt,
+          joinedAt: convertToIST(att.joinedAt),
+          leftAt: convertToIST(att.leftAt),
           duration: att.duration
         }))
-      }
+      },
+      timezone: 'IST (UTC+5:30)'
     });
 
   } catch (error) {
