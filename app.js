@@ -11,6 +11,8 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const crypto = require('crypto');
 
+const mediasoup = require('mediasoup'); //For WebRTC
+
 dotenv.config();
 
 const app = express();
@@ -39,6 +41,50 @@ const io = new Server(server, {
 const activeUsers = new Map();
 const classRooms = new Map();
 const messageRateLimits = new Map();
+
+// SFU NEW VARIABLES
+const mediaConfig = {
+  worker: {
+    rtcMinPort: 10000,
+    rtcMaxPort: 10100,
+    logLevel: 'warn',
+  },
+  router: {
+    mediaCodecs: [
+      {
+        kind: 'audio',
+        mimeType: 'audio/opus',
+        clockRate: 48000,
+        channels: 2,
+      },
+      {
+        kind: 'video',
+        mimeType: 'video/VP8',
+        clockRate: 90000,
+        parameters: {
+          'x-google-start-bitrate': 1000,
+        },
+      },
+    ],
+  },
+  webRtcTransport: {
+    listenIps: [
+      {
+        ip: '0.0.0.0',
+        announcedIp: process.env.ANNOUNCED_IP || '127.0.0.1',
+      },
+    ],
+    maxIncomingBitrate: 1500000,
+    initialAvailableOutgoingBitrate: 1000000,
+  },
+};
+
+let mediasoupWorker;
+const classRouters = new Map();
+const peerTransports = new Map();
+const peerProducers = new Map();
+const peerConsumers = new Map();
+const videoPeers = new Map();
 
 // Utility functions
 const sanitizeInput = (input) => {
@@ -102,6 +148,111 @@ const sendClassMessages = async (socket, classId) => {
     console.error('Error sending class messages:', error);
   }
 };
+
+//MediaSoup Functions 
+async function initializeMediaSoup() {
+  try {
+    mediasoupWorker = await mediasoup.createWorker({
+      logLevel: mediaConfig.worker.logLevel,
+      rtcMinPort: mediaConfig.worker.rtcMinPort,
+      rtcMaxPort: mediaConfig.worker.rtcMaxPort,
+    });
+
+    console.log('✅ MediaSoup worker created');
+
+    mediasoupWorker.on('died', (error) => {
+      console.error('❌ MediaSoup worker died:', error);
+      setTimeout(() => process.exit(1), 2000);
+    });
+
+    return mediasoupWorker;
+  } catch (error) {
+    console.error('❌ Failed to create MediaSoup worker:', error);
+    throw error;
+  }
+}
+
+async function getClassRouter(classId) {
+  if (!classRouters.has(classId)) {
+    const router = await mediasoupWorker.createRouter({
+      mediaCodecs: mediaConfig.router.mediaCodecs,
+    });
+    classRouters.set(classId, router);
+    console.log(`🔧 Router created for class ${classId}`);
+  }
+  return classRouters.get(classId);
+}
+
+async function createConsumersForExistingPeers(newPeerSocketId, classId, newProducer, kind, io) {
+  try {
+    const classPeers = Array.from(videoPeers.values())
+      .filter(p => p.classId === classId && p.socketId !== newPeerSocketId);
+
+    console.log(`📡 Creating consumers for ${classPeers.length} existing peers`);
+
+    for (const existingPeer of classPeers) {
+      const existingSocket = io.sockets.sockets.get(existingPeer.socketId);
+      if (!existingSocket) continue;
+
+      existingSocket.emit('new_producer_available', {
+        producerId: newProducer.id,
+        kind: newProducer.kind,
+        producerSocketId: newPeerSocketId,
+        producerName: videoPeers.get(newPeerSocketId)?.userName,
+      });
+    }
+
+    const newPeerSocket = io.sockets.sockets.get(newPeerSocketId);
+    if (newPeerSocket) {
+      for (const existingPeer of classPeers) {
+        const existingProducers = peerProducers.get(existingPeer.socketId);
+        if (existingProducers) {
+          Object.entries(existingProducers).forEach(([producerKind, producer]) => {
+            newPeerSocket.emit('new_producer_available', {
+              producerId: producer.id,
+              kind: producer.kind,
+              producerSocketId: existingPeer.socketId,
+              producerName: existingPeer.userName,
+            });
+          });
+        }
+      }
+    }
+  } catch (error) {
+    console.error('❌ Error creating consumers for existing peers:', error);
+  }
+}
+
+async function cleanupVideoCallResources(socketId) {
+  try {
+    const producers = peerProducers.get(socketId);
+    if (producers) {
+      Object.values(producers).forEach(producer => {
+        if (!producer.closed) producer.close();
+      });
+      peerProducers.delete(socketId);
+    }
+
+    const consumers = peerConsumers.get(socketId) || [];
+    consumers.forEach(consumer => {
+      if (!consumer.closed) consumer.close();
+    });
+    peerConsumers.delete(socketId);
+
+    const transports = peerTransports.get(socketId);
+    if (transports) {
+      if (!transports.sendTransport.closed) transports.sendTransport.close();
+      if (!transports.recvTransport.closed) transports.recvTransport.close();
+      peerTransports.delete(socketId);
+    }
+
+    videoPeers.delete(socketId);
+
+    console.log(`🧹 Cleaned up video call resources for socket ${socketId}`);
+  } catch (error) {
+    console.error('❌ Error cleaning up video call resources:', error);
+  }
+}
 
 // Socket.IO middleware
 io.use(async (socket, next) => {
@@ -338,6 +489,220 @@ io.on('connection', (socket) => {
     });
   });
 
+  socket.on('join_video_call', async (data) => {
+  try {
+    const user = activeUsers.get(socket.id);
+    if (!user?.classId) {
+      return sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+    }
+
+    console.log(`🎥 ${user.userName} (${user.userRole}) joining video call for class ${user.classId}`);
+
+    const router = await getClassRouter(user.classId);
+    
+    videoPeers.set(socket.id, {
+      socketId: socket.id,
+      classId: user.classId,
+      userId: user.userId,
+      userName: user.userName,
+      userRole: user.userRole,
+      rtpCapabilities: null,
+    });
+
+    peerConsumers.set(socket.id, []);
+
+    socket.emit('video_call_ready', {
+      rtpCapabilities: router.rtpCapabilities,
+    });
+
+    console.log(`✅ Video call ready for ${user.userName}`);
+
+  } catch (error) {
+    console.error('❌ Error joining video call:', error);
+    sendError(socket, 'Failed to join video call', 'VIDEO_CALL_ERROR');
+  }
+});
+
+socket.on('set_rtp_capabilities', async (data) => {
+  try {
+    const peer = videoPeers.get(socket.id);
+    if (!peer) {
+      return sendError(socket, 'Peer not found', 'VIDEO_CALL_ERROR');
+    }
+
+    peer.rtpCapabilities = data.rtpCapabilities;
+    videoPeers.set(socket.id, peer);
+
+    const router = await getClassRouter(peer.classId);
+
+    const sendTransport = await router.createWebRtcTransport(mediaConfig.webRtcTransport);
+    const recvTransport = await router.createWebRtcTransport(mediaConfig.webRtcTransport);
+
+    peerTransports.set(socket.id, {
+      sendTransport,
+      recvTransport,
+    });
+
+    socket.emit('transports_created', {
+      sendTransport: {
+        id: sendTransport.id,
+        iceParameters: sendTransport.iceParameters,
+        iceCandidates: sendTransport.iceCandidates,
+        dtlsParameters: sendTransport.dtlsParameters,
+      },
+      recvTransport: {
+        id: recvTransport.id,
+        iceParameters: recvTransport.iceParameters,
+        iceCandidates: recvTransport.iceCandidates,
+        dtlsParameters: recvTransport.dtlsParameters,
+      },
+    });
+
+    console.log(`🚛 Transports created for ${peer.userName}`);
+
+  } catch (error) {
+    console.error('❌ Error creating transports:', error);
+    sendError(socket, 'Failed to create transports', 'VIDEO_CALL_ERROR');
+  }
+});
+
+socket.on('connect_transport', async (data) => {
+  try {
+    const { transportId, dtlsParameters, direction } = data;
+    const transports = peerTransports.get(socket.id);
+    
+    if (!transports) {
+      return sendError(socket, 'Transports not found', 'VIDEO_CALL_ERROR');
+    }
+
+    const transport = direction === 'send' ? transports.sendTransport : transports.recvTransport;
+    
+    if (transport.id !== transportId) {
+      return sendError(socket, 'Transport ID mismatch', 'VIDEO_CALL_ERROR');
+    }
+
+    await transport.connect({ dtlsParameters });
+    
+    socket.emit('transport_connected', { 
+      transportId, 
+      direction,
+      success: true 
+    });
+
+    console.log(`🔗 Transport connected: ${direction} for ${videoPeers.get(socket.id)?.userName}`);
+
+  } catch (error) {
+    console.error('❌ Error connecting transport:', error);
+    sendError(socket, 'Failed to connect transport', 'VIDEO_CALL_ERROR');
+  }
+});
+
+socket.on('start_producing', async (data) => {
+  try {
+    const { kind, rtpParameters } = data;
+    const peer = videoPeers.get(socket.id);
+    const transports = peerTransports.get(socket.id);
+    
+    if (!peer || !transports) {
+      return sendError(socket, 'Peer or transport not found', 'VIDEO_CALL_ERROR');
+    }
+
+    const producer = await transports.sendTransport.produce({
+      kind,
+      rtpParameters,
+    });
+
+    if (!peerProducers.has(socket.id)) {
+      peerProducers.set(socket.id, {});
+    }
+    const producers = peerProducers.get(socket.id);
+    producers[kind] = producer;
+
+    socket.emit('producer_created', {
+      kind,
+      producerId: producer.id,
+    });
+
+    console.log(`🎬 Producer created: ${kind} for ${peer.userName}`);
+
+    await createConsumersForExistingPeers(socket.id, peer.classId, producer, kind, io);
+
+  } catch (error) {
+    console.error('❌ Error creating producer:', error);
+    sendError(socket, 'Failed to create producer', 'VIDEO_CALL_ERROR');
+  }
+});
+
+socket.on('start_consuming', async (data) => {
+  try {
+    const { producerId } = data;
+    const peer = videoPeers.get(socket.id);
+    const transports = peerTransports.get(socket.id);
+    
+    if (!peer || !transports) {
+      return sendError(socket, 'Peer or transport not found', 'VIDEO_CALL_ERROR');
+    }
+
+    const router = await getClassRouter(peer.classId);
+
+    if (!router.canConsume({
+      producerId,
+      rtpCapabilities: peer.rtpCapabilities,
+    })) {
+      return sendError(socket, 'Cannot consume this producer', 'VIDEO_CALL_ERROR');
+    }
+
+    const consumer = await transports.recvTransport.consume({
+      producerId,
+      rtpCapabilities: peer.rtpCapabilities,
+      paused: true,
+    });
+
+    const consumers = peerConsumers.get(socket.id) || [];
+    consumers.push(consumer);
+    peerConsumers.set(socket.id, consumers);
+
+    socket.emit('consumer_created', {
+      consumerId: consumer.id,
+      producerId,
+      kind: consumer.kind,
+      rtpParameters: consumer.rtpParameters,
+    });
+
+    console.log(`🍿 Consumer created: ${consumer.kind} for ${peer.userName}`);
+
+  } catch (error) {
+    console.error('❌ Error creating consumer:', error);
+    sendError(socket, 'Failed to create consumer', 'VIDEO_CALL_ERROR');
+  }
+});
+
+socket.on('resume_consumer', async (data) => {
+  try {
+    const { consumerId } = data;
+    const consumers = peerConsumers.get(socket.id) || [];
+    const consumer = consumers.find(c => c.id === consumerId);
+    
+    if (!consumer) {
+      return sendError(socket, 'Consumer not found', 'VIDEO_CALL_ERROR');
+    }
+
+    await consumer.resume();
+    
+    socket.emit('consumer_resumed', { consumerId });
+    console.log(`▶️ Consumer resumed: ${consumerId}`);
+
+  } catch (error) {
+    console.error('❌ Error resuming consumer:', error);
+    sendError(socket, 'Failed to resume consumer', 'VIDEO_CALL_ERROR');
+  }
+});
+
+socket.on('leave_video_call', async () => {
+  await cleanupVideoCallResources(socket.id);
+  socket.emit('video_call_left');
+});
+
   socket.on('ask_question', (data) => {
     const user = activeUsers.get(socket.id);
     const sanitizedQuestion = sanitizeInput(data.question);
@@ -392,23 +757,25 @@ io.on('connection', (socket) => {
     }
   });
 
-  socket.on('disconnect', () => {
-    console.log(`User disconnected: ${socket.userName} - Socket ID: ${socket.id}`);
-    const user = activeUsers.get(socket.id);
-    
-    if (user) {
-      if (classRooms.has(user.classId)) {
-        classRooms.get(user.classId).delete(socket.id);
-        if (classRooms.get(user.classId).size === 0) {
-          classRooms.delete(user.classId);
-        } else {
-          broadcastActiveUsers(user.classId);
-        }
+  socket.on('disconnect', async () => {
+  console.log(`User disconnected: ${socket.userName} - Socket ID: ${socket.id}`);
+ 
+  await cleanupVideoCallResources(socket.id);
+  
+  const user = activeUsers.get(socket.id);
+  if (user) {
+    if (classRooms.has(user.classId)) {
+      classRooms.get(user.classId).delete(socket.id);
+      if (classRooms.get(user.classId).size === 0) {
+        classRooms.delete(user.classId);
+      } else {
+        broadcastActiveUsers(user.classId);
       }
-      activeUsers.delete(socket.id);
-      messageRateLimits.delete(user.userId);
     }
-  });
+    activeUsers.delete(socket.id);
+    messageRateLimits.delete(user.userId);
+  }
+});
 });
 
 app.set('io', io);
@@ -559,18 +926,23 @@ app.use('*', (req, res) => {
 // Database connection and server startup
 (async () => {
   try {
+    // Initialize MediaSoup first
+    await initializeMediaSoup();
+
     await mongoose.connect(process.env.MONGO_URI);
     console.log('Connected to MongoDB');
     
     const PORT = process.env.PORT || 5000;
     server.listen(PORT, () => {
       console.log(`Server running on port ${PORT}`);
+      console.log(`WebRTC SFU ready for video calls`);
     });
   } catch (err) {
-    console.error('Failed to connect to MongoDB:', err);
+    console.error('Failed to start server:', err);
     process.exit(1);
   }
 })();
+
 
 // Graceful shutdown
 const gracefulShutdown = () => {
@@ -595,3 +967,4 @@ setInterval(() => {
     }
   }
 }, 5 * 60 * 1000);
+
