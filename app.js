@@ -492,7 +492,7 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('join_video_call', async (data) => {
+socket.on('join_video_call', async (data) => {
   try {
     const user = activeUsers.get(socket.id);
     if (!user?.classId) {
@@ -501,8 +501,15 @@ io.on('connection', (socket) => {
 
     console.log(`🎥 ${user.userName} (${user.userRole}) joining video call for class ${user.classId}`);
 
+    // Initialize MediaSoup worker if not already done
+    if (!mediasoupWorker) {
+      console.log('⚠️ MediaSoup worker not initialized, initializing now...');
+      await initializeMediaSoup();
+    }
+
     const router = await getClassRouter(user.classId);
     
+    // Store peer information
     videoPeers.set(socket.id, {
       socketId: socket.id,
       classId: user.classId,
@@ -512,19 +519,29 @@ io.on('connection', (socket) => {
       rtpCapabilities: null,
     });
 
+    // Initialize empty consumers array
     peerConsumers.set(socket.id, []);
 
+    // Send RTP capabilities to client
     socket.emit('video_call_ready', {
       rtpCapabilities: router.rtpCapabilities,
     });
 
     console.log(`✅ Video call ready for ${user.userName}`);
 
+    // Broadcast to other users in the class that someone joined
+    socket.to(`class_${user.classId}`).emit('user_joined_video', {
+      userId: user.userId,
+      userName: user.userName,
+      socketId: socket.id
+    });
+
   } catch (error) {
     console.error('❌ Error joining video call:', error);
-    sendError(socket, 'Failed to join video call', 'VIDEO_CALL_ERROR');
+    sendError(socket, `Failed to join video call: ${error.message}`, 'VIDEO_CALL_ERROR');
   }
 });
+
 
 socket.on('set_rtp_capabilities', async (data) => {
   try {
@@ -575,12 +592,12 @@ socket.on('connect_transport', async (data) => {
     const transports = peerTransports.get(socket.id);
     
     if (!transports) {
-      return sendError(socket, 'Transports not found', 'VIDEO_CALL_ERROR');
+      return sendError(socket, 'Transports not found. Please rejoin the video call.', 'VIDEO_CALL_ERROR');
     }
 
     const transport = direction === 'send' ? transports.sendTransport : transports.recvTransport;
     
-    if (transport.id !== transportId) {
+    if (!transport || transport.id !== transportId) {
       return sendError(socket, 'Transport ID mismatch', 'VIDEO_CALL_ERROR');
     }
 
@@ -596,10 +613,14 @@ socket.on('connect_transport', async (data) => {
 
   } catch (error) {
     console.error('❌ Error connecting transport:', error);
-    sendError(socket, 'Failed to connect transport', 'VIDEO_CALL_ERROR');
+    socket.emit('transport_connected', { 
+      transportId: data.transportId, 
+      direction: data.direction,
+      success: false,
+      error: error.message 
+    });
   }
 });
-
 socket.on('start_producing', async (data) => {
   try {
     const { kind, rtpParameters } = data;
