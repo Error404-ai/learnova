@@ -67,16 +67,19 @@ const mediaConfig = {
       },
     ],
   },
-  webRtcTransport: {
-    listenIps: [
-      {
-        ip: '0.0.0.0',
-        announcedIp: process.env.ANNOUNCED_IP || '127.0.0.1',
-      },
-    ],
-    maxIncomingBitrate: 1500000,
-    initialAvailableOutgoingBitrate: 1000000,
-  },
+
+webRtcTransport: {
+  listenIps: [
+    {
+      ip: '0.0.0.0',
+      announcedIp: process.env.NODE_ENV === 'production' 
+        ? process.env.ANNOUNCED_IP 
+        : '127.0.0.1',
+    },
+  ],
+  maxIncomingBitrate: 1500000,
+  initialAvailableOutgoingBitrate: 1000000,
+},
 };
 
 let mediasoupWorker;
@@ -784,6 +787,7 @@ app.set('io', io);
 const allowedOrigins = [
   'http://localhost:3000',
   'http://127.0.0.1:3000',
+'  https://learnov.netlify.app/',
   'https://learnova-one.vercel.app'
 ].filter(Boolean);
 
