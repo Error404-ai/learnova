@@ -95,6 +95,12 @@ const mediaConfig = {
     enableIceRestart: true
   },
 };
+let mediasoupWorker;
+const classRouters = new Map();
+const peerTransports = new Map();
+const peerProducers = new Map();
+const peerConsumers = new Map();
+const videoPeers = new Map();
 
 // Utility functions
 const sanitizeInput = (input) => {
@@ -885,48 +891,7 @@ socket.on('connect_transport', async (data) => {
     });
   }
 });
-socket.on('check_transport_health', () => {
-  try {
-    const transports = peerTransports.get(socket.id);
-    const peer = videoPeers.get(socket.id);
-    
-    if (!transports || !peer) {
-      return socket.emit('transport_health', { healthy: false, reason: 'No transports found' });
-    }
 
-    const sendHealth = {
-      id: transports.sendTransport.id,
-      connectionState: transports.sendTransport.connectionState,
-      iceState: transports.sendTransport.iceState,
-      dtlsState: transports.sendTransport.dtlsState,
-      closed: transports.sendTransport.closed
-    };
-
-    const recvHealth = {
-      id: transports.recvTransport.id,
-      connectionState: transports.recvTransport.connectionState,
-      iceState: transports.recvTransport.iceState,
-      dtlsState: transports.recvTransport.dtlsState,
-      closed: transports.recvTransport.closed
-    };
-
-    socket.emit('transport_health', {
-      healthy: !transports.sendTransport.closed && !transports.recvTransport.closed,
-      sendTransport: sendHealth,
-      recvTransport: recvHealth,
-      peer: {
-        userName: peer.userName,
-        classId: peer.classId
-      }
-    });
-
-    console.log(`🏥 Transport health check for ${peer.userName}:`, { sendHealth, recvHealth });
-
-  } catch (error) {
-    console.error('❌ Error checking transport health:', error);
-    socket.emit('transport_health', { healthy: false, reason: error.message });
-  }
-});
 socket.on('retry_transport_connection', async (data) => {
   try {
     const { transportId, direction } = data;
