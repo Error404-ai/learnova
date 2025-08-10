@@ -738,89 +738,78 @@ io.on('connection', (socket) => {
 
     const router = await getClassRouter(peer.classId);
 
-    // Create transports with enhanced configuration
+    // Enhanced transport options with ICE servers
     const transportOptions = {
       ...mediaConfig.webRtcTransport,
       appData: { 
         socketId: socket.id, 
         userId: peer.userId,
         userName: peer.userName 
-      }
+      },
+      // Add ICE servers for better connectivity
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ],
+      // Force specific ICE transport policy
+      iceTransportPolicy: 'all'
     };
 
     const sendTransport = await router.createWebRtcTransport(transportOptions);
     const recvTransport = await router.createWebRtcTransport(transportOptions);
 
-    // Enhanced transport event handlers
-    sendTransport.on('dtlsstatechange', (dtlsState) => {
-      console.log(`📡 Send transport DTLS state: ${dtlsState} for ${peer.userName}`);
-      if (dtlsState === 'failed') {
-        console.log(`❌ Send transport DTLS failed for ${peer.userName}`);
-        socket.emit('transport_error', {
-          transportId: sendTransport.id,
-          direction: 'send',
-          error: 'DTLS connection failed'
+    // Add comprehensive error handling
+    const setupTransportHandlers = (transport, direction) => {
+      transport.on('dtlsstatechange', (dtlsState) => {
+        console.log(`📡 ${direction} transport DTLS: ${dtlsState} for ${peer.userName}`);
+        
+        socket.emit('transport_dtls_state', {
+          transportId: transport.id,
+          direction,
+          state: dtlsState
         });
-      } else if (dtlsState === 'connected') {
-        console.log(`✅ Send transport DTLS connected for ${peer.userName}`);
-      }
-    });
-
-    recvTransport.on('dtlsstatechange', (dtlsState) => {
-      console.log(`📡 Recv transport DTLS state: ${dtlsState} for ${peer.userName}`);
-      if (dtlsState === 'failed') {
-        console.log(`❌ Recv transport DTLS failed for ${peer.userName}`);
-        socket.emit('transport_error', {
-          transportId: recvTransport.id,
-          direction: 'recv',
-          error: 'DTLS connection failed'
-        });
-      } else if (dtlsState === 'connected') {
-        console.log(`✅ Recv transport DTLS connected for ${peer.userName}`);
-      }
-    });
-
-    // Add ICE state change handlers
-    sendTransport.on('icestatechange', (iceState) => {
-      console.log(`🧊 Send transport ICE state: ${iceState} for ${peer.userName}`);
-      if (iceState === 'failed') {
-        socket.emit('transport_error', {
-          transportId: sendTransport.id,
-          direction: 'send',
-          error: 'ICE connection failed'
-        });
-      }
-    });
-
-    recvTransport.on('icestatechange', (iceState) => {
-      console.log(`🧊 Recv transport ICE state: ${iceState} for ${peer.userName}`);
-      if (iceState === 'failed') {
-        socket.emit('transport_error', {
-          transportId: recvTransport.id,
-          direction: 'recv',
-          error: 'ICE connection failed'
-        });
-      }
-    });
-
-    // Connection state handlers
-    sendTransport.on('connectionstatechange', (state) => {
-      console.log(`🔗 Send transport connection state: ${state} for ${peer.userName}`);
-      socket.emit('transport_connection_state', {
-        transportId: sendTransport.id,
-        direction: 'send',
-        state
+        
+        if (dtlsState === 'failed') {
+          console.log(`❌ ${direction} transport DTLS failed for ${peer.userName}`);
+          // Don't close immediately, let client retry
+          setTimeout(() => {
+            if (transport.dtlsState === 'failed') {
+              socket.emit('transport_failed', {
+                transportId: transport.id,
+                direction,
+                reason: 'DTLS handshake failed'
+              });
+            }
+          }, 2000);
+        }
       });
-    });
 
-    recvTransport.on('connectionstatechange', (state) => {
-      console.log(`🔗 Recv transport connection state: ${state} for ${peer.userName}`);
-      socket.emit('transport_connection_state', {
-        transportId: recvTransport.id,
-        direction: 'recv',
-        state
+      transport.on('icestatechange', (iceState) => {
+        console.log(`🧊 ${direction} transport ICE: ${iceState} for ${peer.userName}`);
+        
+        socket.emit('transport_ice_state', {
+          transportId: transport.id,
+          direction,
+          state: iceState
+        });
       });
-    });
+
+      transport.on('iceselectedtuplechange', (iceSelectedTuple) => {
+        console.log(`🎯 ${direction} ICE selected tuple for ${peer.userName}:`, iceSelectedTuple);
+      });
+
+      transport.on('@close', () => {
+        console.log(`🚪 ${direction} transport closed for ${peer.userName}`);
+      });
+
+      // Add error handler
+      transport.on('error', (error) => {
+        console.error(`❌ ${direction} transport error for ${peer.userName}:`, error);
+      });
+    };
+
+    setupTransportHandlers(sendTransport, 'Send');
+    setupTransportHandlers(recvTransport, 'Recv');
 
     peerTransports.set(socket.id, {
       sendTransport,
@@ -845,7 +834,7 @@ io.on('connection', (socket) => {
       success: true
     });
 
-    console.log(`🚛 Transports created for ${peer.userName}`);
+    console.log(`🚛 Enhanced transports created for ${peer.userName}`);
 
   } catch (error) {
     console.error('❌ Error creating transports:', error);
@@ -858,12 +847,6 @@ socket.on('connect_transport', async (data) => {
     const transports = peerTransports.get(socket.id);
     const peer = videoPeers.get(socket.id);
     
-    console.log(`🔧 Connecting ${direction} transport for ${peer?.userName}`, {
-      transportId,
-      dtlsRole: dtlsParameters.role,
-      fingerprintsCount: dtlsParameters.fingerprints?.length
-    });
-    
     if (!transports) {
       return sendError(socket, 'Transports not found. Please rejoin the video call.', 'VIDEO_CALL_ERROR');
     }
@@ -871,13 +854,19 @@ socket.on('connect_transport', async (data) => {
     const transport = direction === 'send' ? transports.sendTransport : transports.recvTransport;
     
     if (!transport || transport.id !== transportId) {
-      console.log(`❌ Transport mismatch: expected ${transportId}, got ${transport?.id}`);
       return sendError(socket, 'Transport ID mismatch', 'VIDEO_CALL_ERROR');
     }
 
-    // Check if transport is already connected
+    // Check current connection state
+    console.log(`🔧 Connecting ${direction} transport for ${peer?.userName}`, {
+      transportId,
+      currentState: transport.connectionState,
+      dtlsState: transport.dtlsState,
+      iceState: transport.iceState
+    });
+
+    // Don't reconnect if already connected
     if (transport.connectionState === 'connected') {
-      console.log(`⚠️ Transport already connected: ${direction} for ${peer?.userName}`);
       return socket.emit('transport_connected', { 
         transportId, 
         direction,
@@ -886,45 +875,37 @@ socket.on('connect_transport', async (data) => {
       });
     }
 
-    // Add connection timeout with proper cleanup
+    // Increased timeout for slower connections
     const connectTimeout = setTimeout(() => {
-      console.log(`⏰ Transport connection timeout for ${direction} transport of ${peer?.userName}`);
+      console.log(`⏰ Transport connection timeout (30s) for ${direction} of ${peer?.userName}`);
       socket.emit('transport_connected', { 
         transportId, 
         direction,
         success: false,
-        error: 'Connection timeout - please check your network connection'
+        error: 'Connection timeout - network connectivity issues'
       });
-    }, 15000); // Increased to 15 seconds
+    }, 30000); // Increased to 30 seconds
 
-    console.log(`🚀 Attempting to connect ${direction} transport...`);
-    
     await transport.connect({ dtlsParameters });
     clearTimeout(connectTimeout);
-    
-    console.log(`✅ Transport connected successfully: ${direction} for ${peer?.userName}`);
     
     socket.emit('transport_connected', { 
       transportId, 
       direction,
       success: true,
-      connectionState: transport.connectionState
+      connectionState: transport.connectionState,
+      dtlsState: transport.dtlsState
     });
 
+    console.log(`✅ Transport connected: ${direction} for ${peer?.userName}`);
+
   } catch (error) {
-    console.error(`❌ Error connecting ${data.direction} transport:`, {
-      error: error.message,
-      stack: error.stack,
-      transportId: data.transportId,
-      user: videoPeers.get(socket.id)?.userName
-    });
-    
+    console.error(`❌ Error connecting ${data.direction} transport:`, error);
     socket.emit('transport_connected', { 
       transportId: data.transportId, 
       direction: data.direction,
       success: false,
-      error: error.message,
-      code: error.code || 'TRANSPORT_CONNECTION_FAILED'
+      error: error.message
     });
   }
 });
@@ -1040,70 +1021,113 @@ socket.on('retry_transport_connection', async (data) => {
   });
 
   socket.on('start_consuming', async (data) => {
-    try {
-      const { producerId } = data;
-      const peer = videoPeers.get(socket.id);
-      const transports = peerTransports.get(socket.id);
+  try {
+    const { producerId } = data;
+    const peer = videoPeers.get(socket.id);
+    const transports = peerTransports.get(socket.id);
+    
+    if (!peer || !transports) {
+      return sendError(socket, 'Peer or transport not found', 'VIDEO_CALL_ERROR');
+    }
+
+    // Check if receive transport is ready
+    if (transports.recvTransport.connectionState !== 'connected' && 
+        transports.recvTransport.connectionState !== 'new') {
+      console.log(`⚠️ Receive transport not ready (${transports.recvTransport.connectionState}) for ${peer.userName}`);
+      return socket.emit('consumer_creation_failed', {
+        producerId,
+        reason: 'Transport not ready',
+        transportState: transports.recvTransport.connectionState
+      });
+    }
+
+    const router = await getClassRouter(peer.classId);
+
+    if (!router.canConsume({
+      producerId,
+      rtpCapabilities: peer.rtpCapabilities,
+    })) {
+      return sendError(socket, 'Cannot consume this producer', 'VIDEO_CALL_ERROR');
+    }
+
+    const consumer = await transports.recvTransport.consume({
+      producerId,
+      rtpCapabilities: peer.rtpCapabilities,
+      paused: false, // Start unpaused
+    });
+
+    // Enhanced consumer event handlers
+    consumer.on('transportclose', () => {
+      console.log(`🚪 Consumer transport closed: ${consumer.kind} for ${peer.userName}`);
       
-      if (!peer || !transports) {
-        return sendError(socket, 'Peer or transport not found', 'VIDEO_CALL_ERROR');
-      }
-
-      const router = await getClassRouter(peer.classId);
-
-      if (!router.canConsume({
-        producerId,
-        rtpCapabilities: peer.rtpCapabilities,
-      })) {
-        return sendError(socket, 'Cannot consume this producer', 'VIDEO_CALL_ERROR');
-      }
-
-      const consumer = await transports.recvTransport.consume({
-        producerId,
-        rtpCapabilities: peer.rtpCapabilities,
-        paused: true,
-      });
-
-      // Handle consumer events
-      consumer.on('transportclose', () => {
-        console.log(`Consumer transport closed for ${peer.userName}`);
-      });
-
-      consumer.on('producerclose', () => {
-        console.log(`Producer closed, removing consumer for ${peer.userName}`);
-        const consumers = peerConsumers.get(socket.id) || [];
-        const index = consumers.findIndex(c => c.id === consumer.id);
-        if (index !== -1) {
-          consumers.splice(index, 1);
-          peerConsumers.set(socket.id, consumers);
-        }
-        
-        // Notify client about producer closure
-        socket.emit('producer_closed', {
-          consumerId: consumer.id,
-          producerId
-        });
-      });
-
+      // Clean up this specific consumer
       const consumers = peerConsumers.get(socket.id) || [];
-      consumers.push(consumer);
-      peerConsumers.set(socket.id, consumers);
+      const index = consumers.findIndex(c => c.id === consumer.id);
+      if (index !== -1) {
+        consumers.splice(index, 1);
+        peerConsumers.set(socket.id, consumers);
+      }
+    });
 
-      socket.emit('consumer_created', {
+    consumer.on('producerclose', () => {
+      console.log(`👋 Producer closed, cleaning up consumer: ${consumer.kind} for ${peer.userName}`);
+      
+      const consumers = peerConsumers.get(socket.id) || [];
+      const index = consumers.findIndex(c => c.id === consumer.id);
+      if (index !== -1) {
+        consumers.splice(index, 1);
+        peerConsumers.set(socket.id, consumers);
+      }
+      
+      socket.emit('producer_closed', {
         consumerId: consumer.id,
         producerId,
-        kind: consumer.kind,
-        rtpParameters: consumer.rtpParameters,
-        success: true
+        kind: consumer.kind
       });
+    });
 
-      console.log(`🍿 Consumer created: ${consumer.kind} for ${peer.userName}`);
+    consumer.on('producerpause', () => {
+      console.log(`⏸️ Producer paused: ${consumer.kind}`);
+      socket.emit('producer_paused', {
+        consumerId: consumer.id,
+        producerId,
+        kind: consumer.kind
+      });
+    });
 
-    } catch (error) {
-      console.error('❌ Error creating consumer:', error);
-      sendError(socket, 'Failed to create consumer', 'VIDEO_CALL_ERROR');
-    }
-  });
+    consumer.on('producerresume', () => {
+      console.log(`▶️ Producer resumed: ${consumer.kind}`);
+      socket.emit('producer_resumed', {
+        consumerId: consumer.id,
+        producerId,
+        kind: consumer.kind
+      });
+    });
+
+    const consumers = peerConsumers.get(socket.id) || [];
+    consumers.push(consumer);
+    peerConsumers.set(socket.id, consumers);
+
+    socket.emit('consumer_created', {
+      consumerId: consumer.id,
+      producerId,
+      kind: consumer.kind,
+      rtpParameters: consumer.rtpParameters,
+      success: true,
+      paused: consumer.paused
+    });
+
+    console.log(`🍿 Consumer created: ${consumer.kind} for ${peer.userName} (paused: ${consumer.paused})`);
+
+  } catch (error) {
+    console.error('❌ Error creating consumer:', error);
+    socket.emit('consumer_creation_failed', {
+      producerId: data.producerId,
+      error: error.message,
+      code: error.code || 'CONSUMER_CREATION_FAILED'
+    });
+  }
+});
 
 socket.on('resume_consumer', async (data) => {
   try {
