@@ -55,7 +55,7 @@ const mediaConfig = {
   worker: {
     rtcMinPort: 10000,
     rtcMaxPort: 10100,
-    logLevel: 'warn',
+    logLevel: 'debug', // Change to debug to see more info
   },
   router: {
     mediaCodecs: [
@@ -80,33 +80,21 @@ const mediaConfig = {
       {
         ip: '0.0.0.0',
         announcedIp: process.env.NODE_ENV === 'production' 
-          ? (process.env.ANNOUNCED_IP || process.env.HOST || '127.0.0.1')
+          ? (process.env.ANNOUNCED_IP || 'your-server-ip')
           : '127.0.0.1',
       },
     ],
     maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000,
-    // Add these critical settings
     enableUdp: true,
     enableTcp: true,
     preferUdp: true,
-    enableSctp: true,
-    maxSctpMessageSize: 262144,
-    sctpSendBufferSize: 262144,
-    // Add DTLS settings
-    dtlsParameters: {
-      role: 'auto',
-      fingerprints: []
-    }
+    enableSctp: false, // Disable SCTP for now
+    // Add additional options for better connectivity
+    iceConsentTimeout: 30,
+    enableIceRestart: true
   },
 };
-
-let mediasoupWorker;
-const classRouters = new Map();
-const peerTransports = new Map();
-const peerProducers = new Map();
-const peerConsumers = new Map();
-const videoPeers = new Map();
 
 // Utility functions
 const sanitizeInput = (input) => {
@@ -183,22 +171,45 @@ async function initializeMediaSoup() {
       return mediasoupWorker;
     }
 
+    console.log('🔧 Creating MediaSoup worker with config:', {
+      logLevel: mediaConfig.worker.logLevel,
+      rtcMinPort: mediaConfig.worker.rtcMinPort,
+      rtcMaxPort: mediaConfig.worker.rtcMaxPort,
+    });
+
     mediasoupWorker = await mediasoup.createWorker({
       logLevel: mediaConfig.worker.logLevel,
       rtcMinPort: mediaConfig.worker.rtcMinPort,
       rtcMaxPort: mediaConfig.worker.rtcMaxPort,
     });
 
-    console.log('✅ MediaSoup worker created');
+    console.log('✅ MediaSoup worker created with PID:', mediasoupWorker.pid);
 
     mediasoupWorker.on('died', (error) => {
       console.error('❌ MediaSoup worker died:', error);
-      mediasoupWorker = null; // Reset the worker
+      mediasoupWorker = null;
+      
+      // Notify all connected video call users
+      io.emit('server_error', {
+        type: 'MEDIASOUP_WORKER_DIED',
+        message: 'Video call service temporarily unavailable'
+      });
+      
       setTimeout(() => {
         console.log('🔄 Attempting to restart MediaSoup worker...');
         initializeMediaSoup().catch(console.error);
       }, 2000);
     });
+
+    // Log worker resource usage periodically
+    setInterval(async () => {
+      try {
+        const usage = await mediasoupWorker.getResourceUsage();
+        console.log('📊 MediaSoup worker usage:', usage);
+      } catch (err) {
+        console.log('Could not get worker usage');
+      }
+    }, 60000); // Every minute
 
     return mediasoupWorker;
   } catch (error) {
@@ -207,7 +218,6 @@ async function initializeMediaSoup() {
     throw error;
   }
 }
-
 async function getClassRouter(classId) {
   try {
     if (!classRouters.has(classId)) {
@@ -799,11 +809,17 @@ io.on('connection', (socket) => {
     sendError(socket, `Failed to create transports: ${error.message}`, 'VIDEO_CALL_ERROR');
   }
 });
-  socket.on('connect_transport', async (data) => {
+socket.on('connect_transport', async (data) => {
   try {
     const { transportId, dtlsParameters, direction } = data;
     const transports = peerTransports.get(socket.id);
     const peer = videoPeers.get(socket.id);
+    
+    console.log(`🔧 Connecting ${direction} transport for ${peer?.userName}`, {
+      transportId,
+      dtlsRole: dtlsParameters.role,
+      fingerprintsCount: dtlsParameters.fingerprints?.length
+    });
     
     if (!transports) {
       return sendError(socket, 'Transports not found. Please rejoin the video call.', 'VIDEO_CALL_ERROR');
@@ -812,44 +828,103 @@ io.on('connection', (socket) => {
     const transport = direction === 'send' ? transports.sendTransport : transports.recvTransport;
     
     if (!transport || transport.id !== transportId) {
+      console.log(`❌ Transport mismatch: expected ${transportId}, got ${transport?.id}`);
       return sendError(socket, 'Transport ID mismatch', 'VIDEO_CALL_ERROR');
     }
 
-    // Add timeout for transport connection
+    // Check if transport is already connected
+    if (transport.connectionState === 'connected') {
+      console.log(`⚠️ Transport already connected: ${direction} for ${peer?.userName}`);
+      return socket.emit('transport_connected', { 
+        transportId, 
+        direction,
+        success: true,
+        alreadyConnected: true
+      });
+    }
+
+    // Add connection timeout with proper cleanup
     const connectTimeout = setTimeout(() => {
       console.log(`⏰ Transport connection timeout for ${direction} transport of ${peer?.userName}`);
       socket.emit('transport_connected', { 
         transportId, 
         direction,
         success: false,
-        error: 'Connection timeout'
+        error: 'Connection timeout - please check your network connection'
       });
-    }, 10000); // 10 second timeout
+    }, 15000); // Increased to 15 seconds
 
-    try {
-      await transport.connect({ dtlsParameters });
-      clearTimeout(connectTimeout);
-      
-      socket.emit('transport_connected', { 
-        transportId, 
-        direction,
-        success: true 
-      });
-
-      console.log(`🔗 Transport connected: ${direction} for ${peer?.userName || 'unknown'}`);
-    } catch (connectError) {
-      clearTimeout(connectTimeout);
-      throw connectError;
-    }
+    console.log(`🚀 Attempting to connect ${direction} transport...`);
+    
+    await transport.connect({ dtlsParameters });
+    clearTimeout(connectTimeout);
+    
+    console.log(`✅ Transport connected successfully: ${direction} for ${peer?.userName}`);
+    
+    socket.emit('transport_connected', { 
+      transportId, 
+      direction,
+      success: true,
+      connectionState: transport.connectionState
+    });
 
   } catch (error) {
-    console.error('❌ Error connecting transport:', error);
+    console.error(`❌ Error connecting ${data.direction} transport:`, {
+      error: error.message,
+      stack: error.stack,
+      transportId: data.transportId,
+      user: videoPeers.get(socket.id)?.userName
+    });
+    
     socket.emit('transport_connected', { 
       transportId: data.transportId, 
       direction: data.direction,
       success: false,
-      error: error.message 
+      error: error.message,
+      code: error.code || 'TRANSPORT_CONNECTION_FAILED'
     });
+  }
+});
+socket.on('check_transport_health', () => {
+  try {
+    const transports = peerTransports.get(socket.id);
+    const peer = videoPeers.get(socket.id);
+    
+    if (!transports || !peer) {
+      return socket.emit('transport_health', { healthy: false, reason: 'No transports found' });
+    }
+
+    const sendHealth = {
+      id: transports.sendTransport.id,
+      connectionState: transports.sendTransport.connectionState,
+      iceState: transports.sendTransport.iceState,
+      dtlsState: transports.sendTransport.dtlsState,
+      closed: transports.sendTransport.closed
+    };
+
+    const recvHealth = {
+      id: transports.recvTransport.id,
+      connectionState: transports.recvTransport.connectionState,
+      iceState: transports.recvTransport.iceState,
+      dtlsState: transports.recvTransport.dtlsState,
+      closed: transports.recvTransport.closed
+    };
+
+    socket.emit('transport_health', {
+      healthy: !transports.sendTransport.closed && !transports.recvTransport.closed,
+      sendTransport: sendHealth,
+      recvTransport: recvHealth,
+      peer: {
+        userName: peer.userName,
+        classId: peer.classId
+      }
+    });
+
+    console.log(`🏥 Transport health check for ${peer.userName}:`, { sendHealth, recvHealth });
+
+  } catch (error) {
+    console.error('❌ Error checking transport health:', error);
+    socket.emit('transport_health', { healthy: false, reason: error.message });
   }
 });
 socket.on('retry_transport_connection', async (data) => {
