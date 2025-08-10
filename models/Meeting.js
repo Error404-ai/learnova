@@ -39,7 +39,7 @@ const meetingSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['scheduled', 'active', 'completed', 'cancelled'],
+    enum: ['scheduled', 'live', 'ended'],
     default: 'scheduled'
   },
   // Basic meeting settings
@@ -80,12 +80,9 @@ const meetingSchema = new mongoose.Schema({
     }
   }],
   // Meeting timing
-  startedAt: {
-    type: Date
-  },
-  endedAt: {
-    type: Date
-  },
+  startedAt: Date,
+  endedAt: Date,
+  startedBy: { type: mongoose.Schema.Types.ObjectId, ref: 'User' },
   actualDuration: {
     type: Number // Actual duration in minutes
   },

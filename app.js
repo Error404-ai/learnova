@@ -100,7 +100,7 @@ const mediaConfig = {
         ip: '0.0.0.0',
         // Fix announced IP configuration
         announcedIp: process.env.NODE_ENV === 'production' 
-          ? (process.env.MEDIASOUP_ANNOUNCED_IP || getPublicIP())
+          ? (process.env.ANNOUNCED_IP)
           : '127.0.0.1',
       },
     ],
@@ -334,6 +334,7 @@ async function cleanupVideoCallResources(socketId) {
     const consumers = peerConsumers.get(socketId) || [];
     consumers.forEach(consumer => {
       try {
+        
         if (consumer && !consumer.closed) {
           consumer.close();
         }
@@ -655,13 +656,55 @@ io.on('connection', (socket) => {
     });
   });
 
-  socket.on('meeting_started', (data) => {
-    handleMeetingEvent('meeting_started', {
-      meetingId: data.meetingId,
-      title: data.title,
-      meetingLink: data.meetingLink
-    });
-  });
+ socket.on('meeting_started', async (data) => {
+  try {
+    const user = activeUsers.get(socket.id);
+    if (!user?.classId) {
+      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+      return;
+    }
+
+    const { meetingId, title, meetingLink } = data;
+
+    // CRITICAL: Update meeting status in database
+    if (meetingId) {
+      try {
+        const Meeting = require('./models/Meeting'); // Adjust path as needed
+        await Meeting.findByIdAndUpdate(meetingId, {
+          status: 'live',
+          startedAt: new Date(),
+          startedBy: socket.userId
+        });
+        console.log(`📊 Meeting ${meetingId} status updated to 'live'`);
+      } catch (dbError) {
+        console.error('❌ Error updating meeting status:', dbError);
+      }
+    }
+
+    const eventData = {
+      id: meetingId || Date.now().toString(),
+      type: 'meeting_started',
+      classId: user.classId,
+      timestamp: new Date(),
+      title,
+      meetingLink,
+      startedBy: {
+        userId: socket.userId,
+        userName: socket.userName
+      }
+    };
+
+    // Broadcast to all users in the class
+    io.to(`class_${user.classId}`).emit('meeting_started', eventData);
+    
+    console.log(`🎬 Meeting started by ${socket.userName} in class ${user.classId}`);
+
+  } catch (error) {
+    console.error('❌ Error handling meeting_started:', error);
+    sendError(socket, 'Failed to start meeting', 'SERVER_ERROR');
+  }
+});
+
 
   // Enhanced video call handlers
   socket.on('join_video_call', async (data) => {
@@ -1013,6 +1056,48 @@ socket.on('retry_transport_connection', async (data) => {
   } catch (error) {
     console.error('❌ Error retrying transport connection:', error);
     sendError(socket, 'Failed to retry transport connection', 'VIDEO_CALL_ERROR');
+  }
+});
+socket.on('meeting_ended', async (data) => {
+  try {
+    const user = activeUsers.get(socket.id);
+    if (!user?.classId) {
+      sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+      return;
+    }
+
+    const { meetingId } = data;
+
+    // Update meeting status in database
+    if (meetingId) {
+      try {
+        const Meeting = require('./models/Meeting');
+        await Meeting.findByIdAndUpdate(meetingId, {
+          status: 'ended',
+          endedAt: new Date()
+        });
+        console.log(`📊 Meeting ${meetingId} status updated to 'ended'`);
+      } catch (dbError) {
+        console.error('❌ Error updating meeting status:', dbError);
+      }
+    }
+
+    const eventData = {
+      id: meetingId || Date.now().toString(),
+      type: 'meeting_ended',
+      classId: user.classId,
+      timestamp: new Date(),
+      endedBy: {
+        userId: socket.userId,
+        userName: socket.userName
+      }
+    };
+
+    io.to(`class_${user.classId}`).emit('meeting_ended', eventData);
+    
+  } catch (error) {
+    console.error('❌ Error ending meeting:', error);
+    sendError(socket, 'Failed to end meeting', 'SERVER_ERROR');
   }
 });
 
