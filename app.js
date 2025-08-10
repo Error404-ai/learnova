@@ -77,6 +77,7 @@ webRtcTransport: {
         : '127.0.0.1',
     },
   ],
+  
   maxIncomingBitrate: 1500000,
   initialAvailableOutgoingBitrate: 1000000,
 },
@@ -542,7 +543,6 @@ socket.on('join_video_call', async (data) => {
   }
 });
 
-
 socket.on('set_rtp_capabilities', async (data) => {
   try {
     const peer = videoPeers.get(socket.id);
@@ -557,6 +557,21 @@ socket.on('set_rtp_capabilities', async (data) => {
 
     const sendTransport = await router.createWebRtcTransport(mediaConfig.webRtcTransport);
     const recvTransport = await router.createWebRtcTransport(mediaConfig.webRtcTransport);
+
+    // Add transport event handlers
+    sendTransport.on('dtlsstatechange', (dtlsState) => {
+      console.log(`Send transport DTLS state: ${dtlsState}`);
+      if (dtlsState === 'closed') {
+        sendTransport.close();
+      }
+    });
+
+    recvTransport.on('dtlsstatechange', (dtlsState) => {
+      console.log(`Recv transport DTLS state: ${dtlsState}`);
+      if (dtlsState === 'closed') {
+        recvTransport.close();
+      }
+    });
 
     peerTransports.set(socket.id, {
       sendTransport,
@@ -621,6 +636,7 @@ socket.on('connect_transport', async (data) => {
     });
   }
 });
+
 socket.on('start_producing', async (data) => {
   try {
     const { kind, rtpParameters } = data;
@@ -636,6 +652,11 @@ socket.on('start_producing', async (data) => {
       rtpParameters,
     });
 
+    // Handle producer events
+    producer.on('transportclose', () => {
+      console.log(`Producer transport closed: ${kind} for ${peer.userName}`);
+    });
+
     if (!peerProducers.has(socket.id)) {
       peerProducers.set(socket.id, {});
     }
@@ -649,6 +670,7 @@ socket.on('start_producing', async (data) => {
 
     console.log(`🎬 Producer created: ${kind} for ${peer.userName}`);
 
+    // Notify other peers about the new producer
     await createConsumersForExistingPeers(socket.id, peer.classId, producer, kind, io);
 
   } catch (error) {
@@ -682,6 +704,21 @@ socket.on('start_consuming', async (data) => {
       paused: true,
     });
 
+    // Handle consumer events
+    consumer.on('transportclose', () => {
+      console.log(`Consumer transport closed for ${peer.userName}`);
+    });
+
+    consumer.on('producerclose', () => {
+      console.log(`Producer closed, removing consumer for ${peer.userName}`);
+      const consumers = peerConsumers.get(socket.id) || [];
+      const index = consumers.findIndex(c => c.id === consumer.id);
+      if (index !== -1) {
+        consumers.splice(index, 1);
+        peerConsumers.set(socket.id, consumers);
+      }
+    });
+
     const consumers = peerConsumers.get(socket.id) || [];
     consumers.push(consumer);
     peerConsumers.set(socket.id, consumers);
@@ -713,15 +750,22 @@ socket.on('resume_consumer', async (data) => {
 
     await consumer.resume();
     
-    socket.emit('consumer_resumed', { consumerId });
+    socket.emit('consumer_resumed', { 
+      consumerId,
+      success: true 
+    });
+    
     console.log(`▶️ Consumer resumed: ${consumerId}`);
 
   } catch (error) {
     console.error('❌ Error resuming consumer:', error);
-    sendError(socket, 'Failed to resume consumer', 'VIDEO_CALL_ERROR');
+    socket.emit('consumer_resumed', { 
+      consumerId: data.consumerId,
+      success: false,
+      error: error.message 
+    });
   }
 });
-
 socket.on('leave_video_call', async () => {
   await cleanupVideoCallResources(socket.id);
   socket.emit('video_call_left');
