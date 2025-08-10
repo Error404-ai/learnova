@@ -8,12 +8,12 @@ const messageSchema = new mongoose.Schema({
     },
     senderName: {
         type: String,
-        required: true
+        required: false
     },
     senderRole: {
         type: String,
         enum: ['teacher', 'student'],
-        required: true
+        required: false
     },
     content: {
         type: String,
@@ -32,7 +32,8 @@ const messageSchema = new mongoose.Schema({
         type: String,
         enum: ['message', 'announcement'],
         default: 'message'
-    }
+    },
+ 
 });
 
 const Message = mongoose.model('Message', messageSchema);
