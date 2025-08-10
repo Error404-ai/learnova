@@ -93,21 +93,20 @@ const meetingSchema = new mongoose.Schema({
   timestamps: true
 });
 
-
 // Indexes for better query performance
 meetingSchema.index({ classId: 1, scheduledDate: 1 });
 meetingSchema.index({ status: 1, scheduledDate: 1 });
 meetingSchema.index({ scheduledBy: 1 });
 
+// ✅ FIXED: Use 'live' instead of 'active'
 meetingSchema.virtual('isLive').get(function() {
-  return this.status === 'active';
+  return this.status === 'live';  // Changed from 'active' to 'live'
 });
 
 // Virtual for getting active participants count
 meetingSchema.virtual('activeParticipantsCount').get(function() {
   return this.attendees.filter(attendee => !attendee.leftAt).length;
 });
-
 
 // Pre-save middleware to validate scheduled date
 meetingSchema.pre('save', function(next) {

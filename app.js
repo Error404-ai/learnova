@@ -636,6 +636,13 @@ io.on('connection', (socket) => {
       sendError(socket, 'Failed to process meeting event', 'SERVER_ERROR');
     }
   };
+  
+  let Meeting;
+try {
+  Meeting = require('./models/Meeting');
+} catch (error) {
+  console.warn('⚠️ Meeting model not found, some features may not work');
+}
 
   socket.on('schedule_meeting', (data) => {
     handleMeetingEvent('meeting_scheduled', {
