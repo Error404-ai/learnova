@@ -639,56 +639,93 @@ io.on('connection', (socket) => {
 
   // Enhanced video call handlers
   socket.on('join_video_call', async (data) => {
-    try {
-      const user = activeUsers.get(socket.id);
-      if (!user?.classId) {
-        return sendError(socket, 'You must join a class first', 'CLASS_ERROR');
-      }
-
-      console.log(`🎥 ${user.userName} (${user.userRole}) joining video call for class ${user.classId}`);
-
-      // Initialize MediaSoup worker if not already done
-      if (!mediasoupWorker) {
-        console.log('⚠️ MediaSoup worker not initialized, initializing now...');
-        await initializeMediaSoup();
-      }
-
-      const router = await getClassRouter(user.classId);
+  try {
+    // Get user from socket or data
+    let user = activeUsers.get(socket.id);
+    
+    // If user not in activeUsers, try to get from data or re-authenticate
+    if (!user && data.classId) {
+      console.log(`⚠️ User not in activeUsers, attempting to rejoin class ${data.classId}`);
       
-      // Store peer information
-      videoPeers.set(socket.id, {
-        socketId: socket.id,
-        classId: user.classId,
-        userId: user.userId,
-        userName: user.userName,
-        userRole: user.userRole,
-        rtpCapabilities: null,
-      });
-
-      // Initialize empty consumers array
-      peerConsumers.set(socket.id, []);
-
-      // Send RTP capabilities to client
-      socket.emit('video_call_ready', {
-        rtpCapabilities: router.rtpCapabilities,
-        success: true
-      });
-
-      console.log(`✅ Video call ready for ${user.userName}`);
-
-      // Broadcast to other users in the class that someone joined
-      socket.to(`class_${user.classId}`).emit('user_joined_video', {
-        userId: user.userId,
-        userName: user.userName,
-        socketId: socket.id
-      });
-
-    } catch (error) {
-      console.error('❌ Error joining video call:', error);
-      sendError(socket, `Failed to join video call: ${error.message}`, 'VIDEO_CALL_ERROR');
+      // Re-add user to activeUsers
+      user = {
+        userId: socket.userId,
+        userName: socket.userName,
+        classId: data.classId,
+        userRole: socket.userRole,
+        joinedAt: new Date()
+      };
+      
+      activeUsers.set(socket.id, user);
+      
+      // Re-join the class room
+      socket.join(`class_${data.classId}`);
+      
+      // Update class rooms
+      if (!classRooms.has(data.classId)) {
+        classRooms.set(data.classId, new Set());
+      }
+      classRooms.get(data.classId).add(socket.id);
+      
+      console.log(`🔄 Re-joined class ${data.classId} for video call`);
     }
-  });
+    
+    if (!user?.classId) {
+      console.log(`❌ No class context for user ${socket.userName}`, {
+        hasUser: !!user,
+        classId: user?.classId,
+        dataClassId: data?.classId,
+        socketRooms: Array.from(socket.rooms)
+      });
+      return sendError(socket, 'You must join a class first', 'CLASS_ERROR');
+    }
 
+    console.log(`🎥 ${user.userName} (${user.userRole}) joining video call for class ${user.classId}`);
+
+    // Initialize MediaSoup worker if not already done
+    if (!mediasoupWorker) {
+      console.log('⚠️ MediaSoup worker not initialized, initializing now...');
+      await initializeMediaSoup();
+    }
+
+    const router = await getClassRouter(user.classId);
+    
+    // Store peer information
+    videoPeers.set(socket.id, {
+      socketId: socket.id,
+      classId: user.classId,
+      userId: user.userId,
+      userName: user.userName,
+      userRole: user.userRole,
+      rtpCapabilities: null,
+    });
+
+    // Initialize empty consumers array
+    peerConsumers.set(socket.id, []);
+
+    // Send RTP capabilities to client
+    socket.emit('video_call_ready', {
+      rtpCapabilities: router.rtpCapabilities,
+      success: true,
+      classId: user.classId,
+      userRole: user.userRole
+    });
+
+    console.log(`✅ Video call ready for ${user.userName}`);
+
+    // Broadcast to other users in the class that someone joined
+    socket.to(`class_${user.classId}`).emit('user_joined_video', {
+      userId: user.userId,
+      userName: user.userName,
+      socketId: socket.id,
+      userRole: user.userRole
+    });
+
+  } catch (error) {
+    console.error('❌ Error joining video call:', error);
+    sendError(socket, `Failed to join video call: ${error.message}`, 'VIDEO_CALL_ERROR');
+  }
+});
   socket.on('set_rtp_capabilities', async (data) => {
   try {
     const peer = videoPeers.get(socket.id);
