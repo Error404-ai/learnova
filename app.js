@@ -678,7 +678,7 @@ try {
       try {
         const Meeting = require('./models/Meeting'); // Adjust path as needed
         await Meeting.findByIdAndUpdate(meetingId, {
-          status: 'live',
+          status: 'active',
           startedAt: new Date(),
           startedBy: socket.userId
         });
@@ -1080,7 +1080,7 @@ socket.on('meeting_ended', async (data) => {
       try {
         const Meeting = require('./models/Meeting');
         await Meeting.findByIdAndUpdate(meetingId, {
-          status: 'ended',
+          status: 'completed',
           endedAt: new Date()
         });
         console.log(`📊 Meeting ${meetingId} status updated to 'ended'`);

@@ -39,7 +39,7 @@ const meetingSchema = new mongoose.Schema({
   },
   status: {
     type: String,
-    enum: ['scheduled', 'live', 'ended'],
+    enum: ['scheduled', 'active', 'completed', 'cancelled'], // ✅ FIXED: Updated to match controller
     default: 'scheduled'
   },
   // Basic meeting settings
@@ -98,9 +98,9 @@ meetingSchema.index({ classId: 1, scheduledDate: 1 });
 meetingSchema.index({ status: 1, scheduledDate: 1 });
 meetingSchema.index({ scheduledBy: 1 });
 
-// ✅ FIXED: Use 'live' instead of 'active'
-meetingSchema.virtual('isLive').get(function() {
-  return this.status === 'live';  // Changed from 'active' to 'live'
+// ✅ FIXED: Use 'active' instead of 'live' to match controller
+meetingSchema.virtual('isActive').get(function() {
+  return this.status === 'active';
 });
 
 // Virtual for getting active participants count
