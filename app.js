@@ -109,7 +109,8 @@ app.use(helmet.contentSecurityPolicy({
       "ws:", 
       "wss:", 
       "http://localhost:5000", 
-      "https://project2-zphf.onrender.com"
+      "https://project2-zphf.onrender.com",
+      'http://13.51.207.176:5000'
     ],
   },
 }));
