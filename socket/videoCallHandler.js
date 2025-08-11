@@ -51,7 +51,7 @@ const mediaConfig = {
           : '127.0.0.1',
       },
     ],
-    maxIncomingBitrate: 1500000,
+     maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000,
     enableUdp: true,
     enableTcp: true,
