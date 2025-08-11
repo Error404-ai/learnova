@@ -1,6 +1,6 @@
 const mediasoup = require('mediasoup');
 
-// Media configuration
+// Enhanced media configuration with better network settings
 const mediaConfig = {
   worker: {
     rtcMinPort: 10000,
@@ -48,7 +48,7 @@ const mediaConfig = {
       {
         ip: '0.0.0.0',
         announcedIp: process.env.NODE_ENV === 'production'
-          ? (process.env.ANNOUNCED_IP)
+          ? (process.env.ANNOUNCED_IP || process.env.SERVER_IP)
           : '127.0.0.1',
       },
     ],
@@ -58,12 +58,21 @@ const mediaConfig = {
     enableTcp: true,
     preferUdp: true,
     enableSctp: false,
-    iceConsentTimeout: 20,
+    iceConsentTimeout: 30, // Increased from 20
     enableIceRestart: true,
+    // Enhanced ICE servers configuration
     iceServers: [
       { urls: 'stun:stun.l.google.com:19302' },
       { urls: 'stun:stun1.l.google.com:19302' },
       { urls: 'stun:stun2.l.google.com:19302' },
+      { urls: 'stun:stun3.l.google.com:19302' },
+      { urls: 'stun:stun4.l.google.com:19302' },
+      // Add TURN servers if available
+      // {
+      //   urls: 'turn:your-turn-server.com:3478',
+      //   username: 'your-username',
+      //   credential: 'your-password'
+      // }
     ],
   },
 };
@@ -75,6 +84,7 @@ const peerTransports = new Map();
 const peerProducers = new Map();
 const peerConsumers = new Map();
 const videoPeers = new Map();
+const consumedProducers = new Map(); // Track what each peer has consumed
 
 // Initialize MediaSoup worker
 async function initializeMediaSoup() {
@@ -152,6 +162,13 @@ async function informExistingPeersOfNewProducer(newPeerSocketId, classId, newPro
       const existingSocket = io.sockets.sockets.get(existingPeer.socketId);
       if (!existingSocket || !existingSocket.connected) continue;
 
+      // Check if this peer already consumed this producer
+      const consumed = consumedProducers.get(existingPeer.socketId) || new Set();
+      if (consumed.has(newProducer.id)) {
+        console.log(`⏭️ Peer ${existingPeer.socketId} already consuming producer ${newProducer.id}`);
+        continue;
+      }
+
       existingSocket.emit('new_producer_available', {
         producerId: newProducer.id,
         kind: newProducer.kind,
@@ -172,12 +189,14 @@ async function informExistingPeersOfNewProducer(newPeerSocketId, classId, newPro
 function informNewPeerOfExistingProducers(newPeerSocketId, classId, io) {
   try {
     const producers = [];
+    const consumed = consumedProducers.get(newPeerSocketId) || new Set();
+    
     for (const [socketId, peer] of videoPeers.entries()) {
       if (peer.classId === classId && socketId !== newPeerSocketId) {
         const userProducers = peerProducers.get(socketId);
         if (userProducers) {
           for (const producer of Object.values(userProducers)) {
-            if (producer && !producer.closed) {
+            if (producer && !producer.closed && !consumed.has(producer.id)) {
               producers.push({
                 producerId: producer.id,
                 kind: producer.kind,
@@ -193,7 +212,7 @@ function informNewPeerOfExistingProducers(newPeerSocketId, classId, io) {
     console.log(`📡 Sending ${producers.length} existing producers to new peer ${newPeerSocketId}`);
 
     const newPeerSocket = io.sockets.sockets.get(newPeerSocketId);
-    if (newPeerSocket && newPeerSocket.connected) {
+    if (newPeerSocket && newPeerSocket.connected && producers.length > 0) {
       newPeerSocket.emit('existing_producers', producers);
     }
   } catch (error) {
@@ -206,13 +225,19 @@ async function cleanupVideoCallResources(socketId, io) {
   try {
     console.log(`🧹 Starting cleanup for socket ${socketId}`);
 
-    // Notify other peers about a producer being closed
+    // Notify other peers about producers being closed
     const peer = videoPeers.get(socketId);
     if (peer && peer.classId && io) {
       const producersToClose = peerProducers.get(socketId);
       if (producersToClose) {
         for (const producer of Object.values(producersToClose)) {
-          io.to(`class_${peer.classId}`).emit('producer_closed', { producerId: producer.id });
+          if (producer && !producer.closed) {
+            io.to(`class_${peer.classId}`).emit('producer_closed', { 
+              producerId: producer.id,
+              kind: producer.kind,
+              producerSocketId: socketId
+            });
+          }
         }
       }
     }
@@ -261,7 +286,8 @@ async function cleanupVideoCallResources(socketId, io) {
       peerTransports.delete(socketId);
     }
 
-    // Remove from video peers
+    // Clean up tracking
+    consumedProducers.delete(socketId);
     videoPeers.delete(socketId);
 
     // Notify other peers of user leaving
@@ -326,6 +352,9 @@ const setupVideoCallHandlers = (socket, io) => {
 
       const router = await getClassRouter(user.classId);
 
+      // Initialize tracking for this peer
+      consumedProducers.set(socket.id, new Set());
+
       // New peer is added to videoPeers map
       videoPeers.set(socket.id, {
         socketId: socket.id,
@@ -338,9 +367,6 @@ const setupVideoCallHandlers = (socket, io) => {
 
       peerConsumers.set(socket.id, []);
 
-      // NEW LOGIC: Inform the newly joined peer about all existing producers
-      informNewPeerOfExistingProducers(socket.id, user.classId, io);
-      
       socket.emit('video_call_ready', {
         rtpCapabilities: router.rtpCapabilities,
         success: true,
@@ -354,6 +380,11 @@ const setupVideoCallHandlers = (socket, io) => {
         socketId: socket.id,
         userRole: user.userRole
       });
+
+      // Wait a bit before informing about existing producers to ensure transport setup
+      setTimeout(() => {
+        informNewPeerOfExistingProducers(socket.id, user.classId, io);
+      }, 1000);
 
     } catch (error) {
       console.error('❌ Error joining video call:', error);
@@ -373,6 +404,8 @@ const setupVideoCallHandlers = (socket, io) => {
       videoPeers.set(socket.id, peer);
 
       const router = await getClassRouter(peer.classId);
+      
+      // Enhanced transport options with better connectivity settings
       const transportOptions = {
         ...mediaConfig.webRtcTransport,
         appData: {
@@ -385,7 +418,7 @@ const setupVideoCallHandlers = (socket, io) => {
       const sendTransport = await router.createWebRtcTransport(transportOptions);
       const recvTransport = await router.createWebRtcTransport(transportOptions);
 
-      // Set up transport handlers
+      // Enhanced transport handlers with better error handling
       const setupTransportHandlers = (transport, direction) => {
         transport.on('dtlsstatechange', (dtlsState) => {
           console.log(`📡 ${direction} transport DTLS: ${dtlsState} for ${peer.userName}`);
@@ -394,6 +427,15 @@ const setupVideoCallHandlers = (socket, io) => {
             direction,
             state: dtlsState
           });
+
+          if (dtlsState === 'failed') {
+            console.error(`❌ ${direction} transport DTLS failed for ${peer.userName}`);
+            socket.emit('transport_error', {
+              transportId: transport.id,
+              direction,
+              error: 'DTLS connection failed'
+            });
+          }
         });
 
         transport.on('icestatechange', (iceState) => {
@@ -403,6 +445,19 @@ const setupVideoCallHandlers = (socket, io) => {
             direction,
             state: iceState
           });
+
+          if (iceState === 'failed') {
+            console.error(`❌ ${direction} transport ICE failed for ${peer.userName}`);
+            socket.emit('transport_error', {
+              transportId: transport.id,
+              direction,
+              error: 'ICE connection failed'
+            });
+          }
+        });
+
+        transport.on('sctpstatechange', (sctpState) => {
+          console.log(`📋 ${direction} transport SCTP: ${sctpState} for ${peer.userName}`);
         });
       };
 
@@ -440,7 +495,7 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // Connect transport
+  // Connect transport with retry mechanism
   socket.on('connect_transport', async (data) => {
     try {
       const { transportId, dtlsParameters, direction } = data;
@@ -459,6 +514,7 @@ const setupVideoCallHandlers = (socket, io) => {
 
       console.log(`🔧 Connecting ${direction} transport for ${peer?.userName}`);
 
+      // Check if already connected
       if (transport.connectionState === 'connected' && transport.dtlsState === 'connected') {
         return socket.emit('transport_connected', {
           transportId,
@@ -468,7 +524,13 @@ const setupVideoCallHandlers = (socket, io) => {
         });
       }
 
-      await transport.connect({ dtlsParameters });
+      // Add timeout for connection
+      const connectionPromise = transport.connect({ dtlsParameters });
+      const timeoutPromise = new Promise((_, reject) => {
+        setTimeout(() => reject(new Error('Transport connection timeout')), 30000);
+      });
+
+      await Promise.race([connectionPromise, timeoutPromise]);
 
       socket.emit('transport_connected', {
         transportId,
@@ -492,7 +554,7 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // Start producing
+  // Start producing with enhanced error handling
   socket.on('start_producing', async (data) => {
     try {
       const { kind, rtpParameters } = data;
@@ -501,6 +563,10 @@ const setupVideoCallHandlers = (socket, io) => {
 
       if (!peer || !transports) {
         return sendError('Peer or transport not found');
+      }
+
+      if (!transports.sendTransport || transports.sendTransport.closed) {
+        return sendError('Send transport not available');
       }
 
       const producer = await transports.sendTransport.produce({
@@ -526,26 +592,16 @@ const setupVideoCallHandlers = (socket, io) => {
 
       console.log(`🎬 Producer created: ${kind} for ${peer.userName}`);
 
-      // OLD LOGIC: inform all other peers of the new producer
+      // Inform all other peers of the new producer
       informExistingPeersOfNewProducer(socket.id, peer.classId, producer, io);
 
     } catch (error) {
       console.error('❌ Error creating producer:', error);
-      sendError('Failed to create producer');
+      sendError(`Failed to create producer: ${error.message}`);
     }
   });
 
-  // Get existing producers (This is now redundant on the server side, as the server
-  // sends this information proactively. You might need this for client-side
-  // a-la-carte consumption, but the initial bug is fixed without it).
-  socket.on('get_existing_producers', ({ classId }) => {
-    // You can remove this event handler if you fully rely on the proactive
-    // `informNewPeerOfExistingProducers` call in `join_video_call`.
-    // The current code is fine, it just means you have two ways to do the same thing.
-    informNewPeerOfExistingProducers(socket.id, classId, io);
-  });
-
-  // Start consuming
+  // Start consuming with duplicate prevention
   socket.on('start_consuming', async (data) => {
     try {
       const { producerId, consumerRtpCapabilities } = data;
@@ -554,6 +610,13 @@ const setupVideoCallHandlers = (socket, io) => {
 
       if (!peer || !transports) {
         return sendError('Peer or transport not found');
+      }
+
+      // Check if already consuming this producer
+      const consumed = consumedProducers.get(socket.id) || new Set();
+      if (consumed.has(producerId)) {
+        console.log(`⏭️ Already consuming producer ${producerId}, skipping`);
+        return;
       }
 
       const recvTransport = transports.recvTransport;
@@ -578,8 +641,9 @@ const setupVideoCallHandlers = (socket, io) => {
           if (producerToConsume) break;
       }
 
-      if (!producerToConsume) {
-          return sendError('Producer not found');
+      if (!producerToConsume || producerToConsume.closed) {
+          console.log(`Producer ${producerId} not found or closed`);
+          return sendError('Producer not found or closed');
       }
 
       const canConsume = router.canConsume({
@@ -597,6 +661,10 @@ const setupVideoCallHandlers = (socket, io) => {
         paused: true,
       });
 
+      // Track this consumption
+      consumed.add(producerId);
+      consumedProducers.set(socket.id, consumed);
+
       consumer.on('transportclose', () => {
         console.log(`🚪 Consumer transport closed: ${consumer.kind} for ${peer.userName}`);
         const consumers = peerConsumers.get(socket.id) || [];
@@ -605,6 +673,10 @@ const setupVideoCallHandlers = (socket, io) => {
           consumers.splice(index, 1);
           peerConsumers.set(socket.id, consumers);
         }
+        // Remove from consumed tracking
+        const consumed = consumedProducers.get(socket.id) || new Set();
+        consumed.delete(producerId);
+        consumedProducers.set(socket.id, consumed);
       });
 
       consumer.on('producerclose', () => {
@@ -614,6 +686,10 @@ const setupVideoCallHandlers = (socket, io) => {
           producerId,
           kind: consumer.kind
         });
+        // Remove from consumed tracking
+        const consumed = consumedProducers.get(socket.id) || new Set();
+        consumed.delete(producerId);
+        consumedProducers.set(socket.id, consumed);
       });
 
       const consumers = peerConsumers.get(socket.id) || [];
@@ -668,6 +744,10 @@ const setupVideoCallHandlers = (socket, io) => {
         return sendError('Consumer not found');
       }
 
+      if (consumer.closed) {
+        return sendError('Consumer is closed');
+      }
+
       await consumer.resume();
 
       socket.emit('consumer_resumed', {
@@ -693,7 +773,7 @@ const setupVideoCallHandlers = (socket, io) => {
     socket.emit('video_call_left');
   });
 
-  // ICE restart
+  // ICE restart with enhanced handling
   socket.on('restart_ice', async (data) => {
     try {
       const { transportId, direction } = data;
@@ -706,8 +786,8 @@ const setupVideoCallHandlers = (socket, io) => {
 
       const transport = direction === 'send' ? transports.sendTransport : transports.recvTransport;
 
-      if (!transport) {
-        return sendError('Transport not found');
+      if (!transport || transport.closed) {
+        return sendError('Transport not found or closed');
       }
 
       console.log(`🔄 Restarting ICE for ${direction} transport of ${peer.userName}`);
@@ -721,10 +801,17 @@ const setupVideoCallHandlers = (socket, io) => {
         success: true
       });
 
+      console.log(`✅ ICE restarted for ${direction} transport of ${peer.userName}`);
+
     } catch (error) {
       console.error('❌ Error restarting ICE:', error);
-      sendError('Failed to restart ICE');
+      sendError(`Failed to restart ICE: ${error.message}`);
     }
+  });
+
+  // Handle disconnect
+  socket.on('disconnect', async () => {
+    await cleanupVideoCallResources(socket.id, io);
   });
 };
 
