@@ -48,7 +48,7 @@ const mediaConfig = {
         ip: '0.0.0.0',
         announcedIp: process.env.NODE_ENV === 'production'
           ? (process.env.ANNOUNCED_IP || process.env.SERVER_IP)
-          : '127.0.0.1',
+          : '13.51.207.176',
       },
     ],
      maxIncomingBitrate: 1500000,
@@ -59,27 +59,6 @@ const mediaConfig = {
     enableSctp: false,
     iceConsentTimeout: 30, // Increased from 20
     enableIceRestart: true,
-    // Enhanced ICE servers configuration
-    iceServers: [
-        {
-            "urls": "stun:global.stun.twilio.com:3478"
-        },
-        {
-            "credential": "L8M6hX6/sXwnlXU+z2+H9noGop9qyH2RySBKFs2gGlo=",
-            "urls": "turn:global.turn.twilio.com:3478?transport=udp",
-            "username": "d86325cd7dd9b10a30b410be8886a6cca888ea27f7365461b1d6ba021febf2cc"
-        },
-        {
-            "credential": "L8M6hX6/sXwnlXU+z2+H9noGop9qyH2RySBKFs2gGlo=",
-            "urls": "turn:global.turn.twilio.com:3478?transport=tcp",
-            "username": "d86325cd7dd9b10a30b410be8886a6cca888ea27f7365461b1d6ba021febf2cc"
-        },
-        {
-            "credential": "L8M6hX6/sXwnlXU+z2+H9noGop9qyH2RySBKFs2gGlo=",
-            "urls": "turn:global.turn.twilio.com:443?transport=tcp",
-            "username": "d86325cd7dd9b10a30b410be8886a6cca888ea27f7365461b1d6ba021febf2cc"
-        }
-    ],
   },
 };
 
