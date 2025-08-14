@@ -424,14 +424,15 @@ socket.on('set_rtp_capabilities', async (data) => {
         dtlsParameters: recvTransport.dtlsParameters,
         sctpParameters: recvTransport.sctpParameters,
       },
-      iceServers: mediaConfig.webRtcTransport.turn_server
+  iceServers: mediaConfig.webRtcTransport.turn_server
         ? [{
-            urls: 'turn:global.turn.twilio.com:3478',
-            username: 'd86325cd7dd9b10a30b410be8886a6cca888ea27f7365461b1d6ba021febf2cc',
-            credential: 'L8M6hX6/sXwnlXU+z2+H9noGop9qyH2RySBKFs2gGlo='
+            credential: "xof1gCWW2oSomiEEaiUTHVxBY0963S4jBKzyglwh1uk=",
+            url: "turn:global.turn.twilio.com:443?transport=tcp",
+            urls: "turn:global.turn.twilio.com:443?transport=tcp",
+            username: "572a8528b6d50e961344ce7d4eb97280f55b57a1a740b6409d6aa5c654687d74"
           }]
         : [],
-      success: true
+success: true
     });
 
     console.log(`🚛 Enhanced transports created for ${peer.userName}`);
