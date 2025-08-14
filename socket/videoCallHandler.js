@@ -427,7 +427,6 @@ socket.on('set_rtp_capabilities', async (data) => {
   iceServers: mediaConfig.webRtcTransport.turn_server
         ? [{
             credential: "xof1gCWW2oSomiEEaiUTHVxBY0963S4jBKzyglwh1uk=",
-            url: "turn:global.turn.twilio.com:443",
             urls: "turn:global.turn.twilio.com:443",
             username: "572a8528b6d50e961344ce7d4eb97280f55b57a1a740b6409d6aa5c654687d74"
           }]
