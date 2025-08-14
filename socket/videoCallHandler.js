@@ -46,19 +46,17 @@ const mediaConfig = {
     listenIps: [
       {
         ip: '0.0.0.0',
-        // 🔥 CRITICAL FIX: Use your actual AWS public IP
-        announcedIp: process.env.ANNOUNCED_IP || '51.20.245.210', // Replace with actual IP
+        announcedIp: process.env.ANNOUNCED_IP || '51.20.245.210',
       },
     ],
     maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000,
     enableUdp: true,
     enableTcp: true,
-    preferUdp: true,
+    preferUdp: true, // Changed back to prefer UDP
     enableSctp: false,
     iceConsentTimeout: 30,
     enableIceRestart: true,
-    // 🔥 CRITICAL: Add proper port ranges
     portRange: {
       min: 10000,
       max: 10100
@@ -73,9 +71,6 @@ const peerTransports = new Map();
 const peerProducers = new Map();
 const peerConsumers = new Map();
 const videoPeers = new Map();
-
-// 🔥 CRITICAL FIX: Add connection state tracking
-const connectionStates = new Map();
 
 // Initialize MediaSoup worker
 async function initializeMediaSoup() {
@@ -102,7 +97,6 @@ async function initializeMediaSoup() {
     mediasoupWorker.on('died', (error) => {
       console.error('❌ MediaSoup worker died:', error);
       mediasoupWorker = null;
-
       setTimeout(() => {
         console.log('🔄 Attempting to restart MediaSoup worker...');
         initializeMediaSoup().catch(console.error);
@@ -137,7 +131,7 @@ async function getClassRouter(classId) {
   }
 }
 
-// 🔥 FIXED: Better producer notification system
+// Inform existing peers of new producer
 async function informExistingPeersOfNewProducer(newPeerSocketId, classId, newProducer, io) {
   try {
     const classPeers = Array.from(videoPeers.values())
@@ -149,22 +143,19 @@ async function informExistingPeersOfNewProducer(newPeerSocketId, classId, newPro
       const existingSocket = io.sockets.sockets.get(existingPeer.socketId);
       if (!existingSocket || !existingSocket.connected) continue;
 
-      // 🔥 FIX: Add delay to ensure transport is ready
-      setTimeout(() => {
-        existingSocket.emit('new_producer_available', {
-          producerId: newProducer.id,
-          kind: newProducer.kind,
-          producerSocketId: newPeerSocketId,
-          producerName: videoPeers.get(newPeerSocketId)?.userName,
-        });
-      }, 1000); // 1 second delay
+      existingSocket.emit('new_producer_available', {
+        producerId: newProducer.id,
+        kind: newProducer.kind,
+        producerSocketId: newPeerSocketId,
+        producerName: videoPeers.get(newPeerSocketId)?.userName,
+      });
     }
   } catch (error) {
     console.error('❌ Error informing existing peers of new producer:', error);
   }
 }
 
-// 🔥 FIXED: Better existing producer notification
+// Inform new peer of existing producers
 function informNewPeerOfExistingProducers(newPeerSocketId, classId, io) {
   try {
     const producers = [];
@@ -189,18 +180,15 @@ function informNewPeerOfExistingProducers(newPeerSocketId, classId, io) {
     console.log(`📡 Sending ${producers.length} existing producers to new peer ${newPeerSocketId}`);
 
     const newPeerSocket = io.sockets.sockets.get(newPeerSocketId);
-    if (newPeerSocket && newPeerSocket.connected) {
-      // 🔥 FIX: Add delay to ensure transports are ready
-      setTimeout(() => {
-        newPeerSocket.emit('existing_producers', producers);
-      }, 2000); // 2 second delay
+    if (newPeerSocket && newPeerSocket.connected && producers.length > 0) {
+      newPeerSocket.emit('existing_producers', producers);
     }
   } catch (error) {
     console.error('❌ Error informing new peer of existing producers:', error);
   }
 }
 
-// 🔥 ENHANCED: Better cleanup with proper notifications
+// Cleanup video call resources
 async function cleanupVideoCallResources(socketId, io) {
   try {
     console.log(`🧹 Starting cleanup for socket ${socketId}`);
@@ -267,9 +255,6 @@ async function cleanupVideoCallResources(socketId, io) {
       peerTransports.delete(socketId);
     }
 
-    // Clean up connection state tracking
-    connectionStates.delete(socketId);
-
     // Remove from video peers
     videoPeers.delete(socketId);
 
@@ -333,13 +318,6 @@ const setupVideoCallHandlers = (socket, io) => {
 
       const router = await getClassRouter(user.classId);
 
-      // 🔥 FIX: Initialize connection state
-      connectionStates.set(socket.id, {
-        transportReady: false,
-        rtpCapabilitiesSet: false,
-        joining: true
-      });
-
       videoPeers.set(socket.id, {
         socketId: socket.id,
         classId: user.classId,
@@ -371,7 +349,7 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // 🔥 ENHANCED: Better transport creation with proper error handling
+  // Set RTP capabilities and create transports
   socket.on('set_rtp_capabilities', async (data) => {
     try {
       const peer = videoPeers.get(socket.id);
@@ -382,16 +360,8 @@ const setupVideoCallHandlers = (socket, io) => {
       peer.rtpCapabilities = data.rtpCapabilities;
       videoPeers.set(socket.id, peer);
 
-      // 🔥 FIX: Update connection state
-      const connState = connectionStates.get(socket.id);
-      if (connState) {
-        connState.rtpCapabilitiesSet = true;
-        connectionStates.set(socket.id, connState);
-      }
-
       const router = await getClassRouter(peer.classId);
       
-      // 🔥 CRITICAL: Enhanced transport options with better configuration
       const transportOptions = {
         ...mediaConfig.webRtcTransport,
         appData: {
@@ -399,62 +369,35 @@ const setupVideoCallHandlers = (socket, io) => {
           userId: peer.userId,
           userName: peer.userName
         },
-        // 🔥 Add explicit TURN configuration
-        enableUdp: true,
-        enableTcp: true,
-        preferUdp: false, // Prefer TCP for better reliability behind NAT
-        iceConsentTimeout: 20,
-        enableIceRestart: true
       };
 
       const sendTransport = await router.createWebRtcTransport(transportOptions);
       const recvTransport = await router.createWebRtcTransport(transportOptions);
 
-      // 🔥 ENHANCED: Better transport event handling
+      // Enhanced transport event handling
       const setupTransportHandlers = (transport, direction) => {
         transport.on('dtlsstatechange', (dtlsState) => {
           console.log(`📡 ${direction} transport DTLS: ${dtlsState} for ${peer.userName}`);
-          socket.emit('transport_dtls_state', {
-            transportId: transport.id,
-            direction,
-            state: dtlsState
-          });
-
-          // 🔥 FIX: Track successful connections
           if (dtlsState === 'connected') {
-            const connState = connectionStates.get(socket.id);
-            if (connState) {
-              connState.transportReady = true;
-              connectionStates.set(socket.id, connState);
-              
-              // 🔥 FIX: Only inform about existing producers after transport is ready
-              if (direction === 'recv' && connState.rtpCapabilitiesSet) {
-                setTimeout(() => {
-                  informNewPeerOfExistingProducers(socket.id, peer.classId, io);
-                }, 1000);
-              }
+            console.log(`✅ ${direction} transport fully connected for ${peer.userName}`);
+            
+            // Inform about existing producers when receive transport is ready
+            if (direction === 'recv') {
+              setTimeout(() => {
+                informNewPeerOfExistingProducers(socket.id, peer.classId, io);
+              }, 500);
             }
           }
         });
 
         transport.on('icestatechange', (iceState) => {
           console.log(`🧊 ${direction} transport ICE: ${iceState} for ${peer.userName}`);
-          socket.emit('transport_ice_state', {
-            transportId: transport.id,
-            direction,
-            state: iceState
-          });
         });
 
-        // 🔥 FIX: Add connection failed handler
         transport.on('connectionstatechange', (connectionState) => {
           console.log(`🔗 ${direction} transport connection: ${connectionState} for ${peer.userName}`);
           if (connectionState === 'failed') {
             console.error(`❌ ${direction} transport connection failed for ${peer.userName}`);
-            socket.emit('transport_connection_failed', {
-              transportId: transport.id,
-              direction
-            });
           }
         });
       };
@@ -467,7 +410,6 @@ const setupVideoCallHandlers = (socket, io) => {
         recvTransport,
       });
 
-      // 🔥 CRITICAL: Enhanced response with TURN servers
       socket.emit('transports_created', {
         sendTransport: {
           id: sendTransport.id,
@@ -483,23 +425,10 @@ const setupVideoCallHandlers = (socket, io) => {
           dtlsParameters: recvTransport.dtlsParameters,
           sctpParameters: recvTransport.sctpParameters,
         },
-        // 🔥 CRITICAL: Add TURN servers configuration
-        iceServers: [
-          {
-            urls: "turn:global.turn.twilio.com:443",
-            username: "572a8528b6d50e961344ce7d4eb97280f55b57a1a740b6409d6aa5c654687d74",
-            credential: "xof1gCWW2oSomiEEaiUTHVxBY0963S4jBKzyglwh1uk="
-          },
-          {
-            urls: "turn:global.turn.twilio.com:3478",
-            username: "572a8528b6d50e961344ce7d4eb97280f55b57a1a740b6409d6aa5c654687d74",
-            credential: "xof1gCWW2oSomiEEaiUTHVxBY0963S4jBKzyglwh1uk="
-          }
-        ],
         success: true
       });
 
-      console.log(`🚛 Enhanced transports created for ${peer.userName}`);
+      console.log(`🚛 Transports created for ${peer.userName}`);
 
     } catch (error) {
       console.error('❌ Error creating transports:', error);
@@ -507,7 +436,7 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // 🔥 ENHANCED: Better transport connection handling
+  // Connect transport
   socket.on('connect_transport', async (data) => {
     try {
       const { transportId, dtlsParameters, direction } = data;
@@ -526,30 +455,7 @@ const setupVideoCallHandlers = (socket, io) => {
 
       console.log(`🔧 Connecting ${direction} transport for ${peer?.userName}`);
 
-      // 🔥 FIX: Better connection state checking
-      if (transport.connectionState === 'connected' && transport.dtlsState === 'connected') {
-        return socket.emit('transport_connected', {
-          transportId,
-          direction,
-          success: true,
-          alreadyConnected: true
-        });
-      }
-
-      // 🔥 FIX: Add timeout for connection
-      const connectionTimeout = setTimeout(() => {
-        console.error(`❌ Transport connection timeout for ${peer?.userName}`);
-        socket.emit('transport_connected', {
-          transportId,
-          direction,
-          success: false,
-          error: 'Connection timeout'
-        });
-      }, 10000); // 10 second timeout
-
       await transport.connect({ dtlsParameters });
-      
-      clearTimeout(connectionTimeout);
 
       socket.emit('transport_connected', {
         transportId,
@@ -573,7 +479,7 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // 🔥 ENHANCED: Better producer creation
+  // Start producing
   socket.on('start_producing', async (data) => {
     try {
       const { kind, rtpParameters } = data;
@@ -584,11 +490,7 @@ const setupVideoCallHandlers = (socket, io) => {
         return sendError('Peer or transport not found');
       }
 
-      // 🔥 FIX: Check if transport is ready
-      const connState = connectionStates.get(socket.id);
-      if (!connState?.transportReady) {
-        return sendError('Transport not ready for producing');
-      }
+      console.log(`🎬 Creating ${kind} producer for ${peer.userName}`);
 
       const producer = await transports.sendTransport.produce({
         kind,
@@ -611,12 +513,10 @@ const setupVideoCallHandlers = (socket, io) => {
         success: true
       });
 
-      console.log(`🎬 Producer created: ${kind} for ${peer.userName}`);
+      console.log(`✅ Producer created: ${kind} for ${peer.userName} - ID: ${producer.id}`);
 
-      // 🔥 FIX: Better timing for informing peers
-      setTimeout(() => {
-        informExistingPeersOfNewProducer(socket.id, peer.classId, producer, io);
-      }, 500);
+      // Immediately inform existing peers
+      informExistingPeersOfNewProducer(socket.id, peer.classId, producer, io);
 
     } catch (error) {
       console.error('❌ Error creating producer:', error);
@@ -624,7 +524,7 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // 🔥 ENHANCED: Much better consumer creation with proper error handling
+  // Start consuming
   socket.on('start_consuming', async (data) => {
     try {
       const { producerId, consumerRtpCapabilities } = data;
@@ -633,15 +533,6 @@ const setupVideoCallHandlers = (socket, io) => {
 
       if (!peer || !transports) {
         return sendError('Peer or transport not found');
-      }
-
-      // 🔥 FIX: Check if transport is ready
-      const connState = connectionStates.get(socket.id);
-      if (!connState?.transportReady) {
-        return socket.emit('consumer_creation_failed', {
-          producerId,
-          reason: 'Transport not ready for consuming'
-        });
       }
 
       const recvTransport = transports.recvTransport;
@@ -675,7 +566,7 @@ const setupVideoCallHandlers = (socket, io) => {
         });
       }
 
-      // 🔥 FIX: Use peer's RTP capabilities instead of consumer's
+      // Check if peer can consume
       const canConsume = router.canConsume({
         producerId: producerToConsume.id,
         rtpCapabilities: peer.rtpCapabilities
@@ -688,10 +579,12 @@ const setupVideoCallHandlers = (socket, io) => {
         });
       }
 
+      console.log(`🍿 Creating consumer for ${peer.userName} from ${producerPeer?.userName} (${producerToConsume.kind})`);
+
       const consumer = await recvTransport.consume({
         producerId: producerToConsume.id,
         rtpCapabilities: peer.rtpCapabilities,
-        paused: true,
+        paused: false, // Start unpaused
       });
 
       consumer.on('transportclose', () => {
@@ -724,7 +617,6 @@ const setupVideoCallHandlers = (socket, io) => {
         rtpParameters: consumer.rtpParameters,
         success: true,
         paused: consumer.paused,
-        // 🔥 ADD: Producer peer information
         producerPeer: producerPeer ? {
           socketId: producerPeer.socketId,
           userName: producerPeer.userName,
@@ -732,24 +624,7 @@ const setupVideoCallHandlers = (socket, io) => {
         } : null
       });
 
-      // 🔥 FIX: Better auto-resume logic
-      setTimeout(async () => {
-        try {
-          if (!consumer.closed && consumer.paused) {
-            await consumer.resume();
-            socket.emit('consumer_resumed', {
-              consumerId: consumer.id,
-              producerId,
-              success: true
-            });
-            console.log(`▶️ Auto-resumed consumer: ${consumer.kind} for ${peer.userName} from ${producerPeer?.userName}`);
-          }
-        } catch (error) {
-          console.error('❌ Error auto-resuming consumer:', error);
-        }
-      }, 1000); // Increased delay
-
-      console.log(`🍿 Consumer created: ${consumer.kind} for ${peer.userName} from ${producerPeer?.userName}`);
+      console.log(`✅ Consumer created: ${consumer.kind} for ${peer.userName} from ${producerPeer?.userName}`);
 
     } catch (error) {
       console.error('❌ Error creating consumer:', error);
@@ -767,38 +642,9 @@ const setupVideoCallHandlers = (socket, io) => {
     socket.emit('video_call_left');
   });
 
-  // 🔥 ENHANCED: Better ICE restart
-  socket.on('restart_ice', async (data) => {
-    try {
-      const { transportId, direction } = data;
-      const transports = peerTransports.get(socket.id);
-      const peer = videoPeers.get(socket.id);
-
-      if (!transports || !peer) {
-        return sendError('Transport or peer not found');
-      }
-
-      const transport = direction === 'send' ? transports.sendTransport : transports.recvTransport;
-
-      if (!transport) {
-        return sendError('Transport not found');
-      }
-
-      console.log(`🔄 Restarting ICE for ${direction} transport of ${peer.userName}`);
-
-      await transport.restartIce();
-
-      socket.emit('ice_restarted', {
-        transportId,
-        direction,
-        iceParameters: transport.iceParameters,
-        success: true
-      });
-
-    } catch (error) {
-      console.error('❌ Error restarting ICE:', error);
-      sendError('Failed to restart ICE');
-    }
+  // Handle disconnect
+  socket.on('disconnect', async () => {
+    await cleanupVideoCallResources(socket.id, io);
   });
 };
 
