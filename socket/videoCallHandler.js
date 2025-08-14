@@ -426,7 +426,7 @@ socket.on('set_rtp_capabilities', async (data) => {
       },
       iceServers: mediaConfig.webRtcTransport.turn_server
         ? [{
-            urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+            urls: 'turn:global.turn.twilio.com:3478',
             username: 'd86325cd7dd9b10a30b410be8886a6cca888ea27f7365461b1d6ba021febf2cc',
             credential: 'L8M6hX6/sXwnlXU+z2+H9noGop9qyH2RySBKFs2gGlo='
           }]
