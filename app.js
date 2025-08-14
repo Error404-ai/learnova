@@ -255,6 +255,25 @@ const gracefulShutdown = () => {
     });
   });
 };
+// Add this to your app.js for debugging
 
+app.get('/api/debug/video-status', (req, res) => {
+  const { videoPeers, peerTransports, peerProducers, peerConsumers } = require('./socket/videoCallHandler');
+  
+  res.json({
+    mediasoupWorker: !!mediasoupWorker,
+    activePeers: videoPeers.size,
+    activeTransports: peerTransports.size,
+    activeProducers: peerProducers.size,
+    activeConsumers: peerConsumers.size,
+    serverIP: process.env.ANNOUNCED_IP || 'NOT_SET',
+    environment: process.env.NODE_ENV,
+    peers: Array.from(videoPeers.values()).map(p => ({
+      socketId: p.socketId,
+      userName: p.userName,
+      classId: p.classId
+    }))
+  });
+});
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
