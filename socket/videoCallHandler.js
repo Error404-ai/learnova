@@ -51,11 +51,6 @@ const mediaConfig = {
           : '13.51.207.176',
       },
     ],
- turn_server: {
-          url: 'turn:global.turn.twilio.com:3478?transport=udp',
-          username: 'd86325cd7dd9b10a30b410be8886a6cca888ea27f7365461b1d6ba021febf2cc',
-          password: 'L8M6hX6/sXwnlXU+z2+H9noGop9qyH2RySBKFs2gGlo=',
-        },
      maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000,
     enableUdp: true,
@@ -362,83 +357,90 @@ const setupVideoCallHandlers = (socket, io) => {
   });
 
   // Set RTP capabilities and create transports
-  socket.on('set_rtp_capabilities', async (data) => {
-    try {
-      const peer = videoPeers.get(socket.id);
-      if (!peer) {
-        return sendError('Peer not found');
-      }
+socket.on('set_rtp_capabilities', async (data) => {
+  try {
+    const peer = videoPeers.get(socket.id);
+    if (!peer) {
+      return sendError('Peer not found');
+    }
 
-      peer.rtpCapabilities = data.rtpCapabilities;
-      videoPeers.set(socket.id, peer);
+    peer.rtpCapabilities = data.rtpCapabilities;
+    videoPeers.set(socket.id, peer);
 
-      const router = await getClassRouter(peer.classId);
-      const transportOptions = {
-        ...mediaConfig.webRtcTransport,
-        appData: {
-          socketId: socket.id,
-          userId: peer.userId,
-          userName: peer.userName
-        },
-      };
+    const router = await getClassRouter(peer.classId);
+    const transportOptions = {
+      ...mediaConfig.webRtcTransport,
+      appData: {
+        socketId: socket.id,
+        userId: peer.userId,
+        userName: peer.userName
+      },
+    };
 
-      const sendTransport = await router.createWebRtcTransport(transportOptions);
-      const recvTransport = await router.createWebRtcTransport(transportOptions);
+    const sendTransport = await router.createWebRtcTransport(transportOptions);
+    const recvTransport = await router.createWebRtcTransport(transportOptions);
 
-      // Set up transport handlers
-      const setupTransportHandlers = (transport, direction) => {
-        transport.on('dtlsstatechange', (dtlsState) => {
-          console.log(`📡 ${direction} transport DTLS: ${dtlsState} for ${peer.userName}`);
-          socket.emit('transport_dtls_state', {
-            transportId: transport.id,
-            direction,
-            state: dtlsState
-          });
-        });
+    // Set up transport handlers
+    const setupTransportHandlers = (transport, direction) => {
+      transport.on('dtlsstatechange', (dtlsState) => {
+        console.log(`📡 ${direction} transport DTLS: ${dtlsState} for ${peer.userName}`);
+        socket.emit('transport_dtls_state', {
+          transportId: transport.id,
+          direction,
+          state: dtlsState
+        });
+      });
 
-        transport.on('icestatechange', (iceState) => {
-          console.log(`🧊 ${direction} transport ICE: ${iceState} for ${peer.userName}`);
-          socket.emit('transport_ice_state', {
-            transportId: transport.id,
-            direction,
-            state: iceState
-          });
-        });
-      };
+      transport.on('icestatechange', (iceState) => {
+        console.log(`🧊 ${direction} transport ICE: ${iceState} for ${peer.userName}`);
+        socket.emit('transport_ice_state', {
+          transportId: transport.id,
+          direction,
+          state: iceState
+        });
+      });
+    };
 
-      setupTransportHandlers(sendTransport, 'Send');
-      setupTransportHandlers(recvTransport, 'Recv');
+    setupTransportHandlers(sendTransport, 'Send');
+    setupTransportHandlers(recvTransport, 'Recv');
 
-      peerTransports.set(socket.id, {
-        sendTransport,
-        recvTransport,
-      });
+    peerTransports.set(socket.id, {
+      sendTransport,
+      recvTransport,
+    });
 
-      socket.emit('transports_created', {
-        sendTransport: {
-          id: sendTransport.id,
-          iceParameters: sendTransport.iceParameters,
-          iceCandidates: sendTransport.iceCandidates,
-          dtlsParameters: sendTransport.dtlsParameters,
-          sctpParameters: sendTransport.sctpParameters,
-        },
-        recvTransport: {
-          id: recvTransport.id,
-          iceParameters: recvTransport.iceParameters,
-          iceCandidates: recvTransport.iceCandidates,
-          dtlsParameters: recvTransport.dtlsParameters,
-          sctpParameters: recvTransport.sctpParameters,
-        },
-        success: true
-      });
+    socket.emit('transports_created', {
+      sendTransport: {
+        id: sendTransport.id,
+        iceParameters: sendTransport.iceParameters,
+        iceCandidates: sendTransport.iceCandidates,
+        dtlsParameters: sendTransport.dtlsParameters,
+        sctpParameters: sendTransport.sctpParameters,
+      },
+      recvTransport: {
+        id: recvTransport.id,
+        iceParameters: recvTransport.iceParameters,
+        iceCandidates: recvTransport.iceCandidates,
+        dtlsParameters: recvTransport.dtlsParameters,
+        sctpParameters: recvTransport.sctpParameters,
+      },
+      iceServers: mediaConfig.webRtcTransport.turn_server
+        ? [{
+            urls: 'turn:global.turn.twilio.com:3478?transport=udp',
+            username: 'd86325cd7dd9b10a30b410be8886a6cca888ea27f7365461b1d6ba021febf2cc',
+            credential: 'L8M6hX6/sXwnlXU+z2+H9noGop9qyH2RySBKFs2gGlo='
+          }]
+        : [],
+      success: true
+    });
 
-      console.log(`🚛 Enhanced transports created for ${peer.userName}`);
+    console.log(`🚛 Enhanced transports created for ${peer.userName}`);
 
-    } catch (error) {
-      console.error('❌ Error creating transports:', error);
-      sendError(`Failed to create transports: ${error.message}`);
-    }
-  });
+  } catch (error) {
+    console.error('❌ Error creating transports:', error);
+    sendError(`Failed to create transports: ${error.message}`);
+  }
+});
 
   // Connect transport
   socket.on('connect_transport', async (data) => {
