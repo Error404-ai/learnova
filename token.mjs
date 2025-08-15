@@ -1,11 +1,12 @@
 import express from 'express';
 import twilio from 'twilio';
 import dotenv from 'dotenv';
+import cors from 'cors'; 
 
 dotenv.config();
 
 const app = express();
-
+app.use(cors());
 // Load from .env
 const accountSid = process.env.TWILIO_ACCOUNT_SID;
 const authToken = process.env.TWILIO_AUTH_TOKEN;
