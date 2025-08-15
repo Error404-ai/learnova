@@ -54,43 +54,6 @@ app.get('/api/ice-servers', (req, res) => {
   }
 });
 
-// For Twilio TURN service (production recommended)
-const twilio = require('twilio');
-
-app.get('/api/turn-credentials', async (req, res) => {
-  try {
-    const accountSid = process.env.TWILIO_ACCOUNT_SID;
-    const authToken = process.env.TWILIO_AUTH_TOKEN;
-    
-    if (!accountSid || !authToken) {
-      throw new Error('Twilio credentials not configured');
-    }
-    
-    const client = twilio(accountSid, authToken);
-    const token = await client.tokens.create();
-    
-    res.json({
-      iceServers: token.iceServers,
-      success: true
-    });
-  } catch (error) {
-    console.error('Error getting Twilio TURN credentials:', error);
-    
-    // Fallback to your own TURN server or public STUN
-    res.json({
-      iceServers: [
-        { urls: 'stun:stun.l.google.com:19302' },
-        {
-          urls: TURN_SERVER_URL,
-          username: TURN_USERNAME,
-          credential: TURN_PASSWORD
-        }
-      ],
-      success: false,
-      fallback: true
-    });
-  }
-});
 const server = http.createServer(app);
 
 // Models
@@ -212,7 +175,9 @@ const userRoutes = require("./routes/userroutes");
 const classRoutes = require('./routes/classroutes');
 const assignmentRoutes = require('./routes/assignmentroutes');
 const meetingRoutes = require('./routes/meetingRoutes');
+const turnRoutes = require('./routes/turn')
 
+app.use("/api", turnRoutes);
 app.use('/api/auth', authRoutes);
 app.use("/user", userRoutes);
 app.use('/api/class', classRoutes);
