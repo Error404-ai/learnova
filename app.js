@@ -18,6 +18,79 @@ const { setupMeetingHandlers } = require('./socket/meetingSocketHandler');
 dotenv.config();
 
 const app = express();
+app.get('/api/ice-servers', (req, res) => {
+  try {
+    const iceServers = [
+      // Public STUN servers
+      { urls: 'stun:stun.l.google.com:19302' },
+      { urls: 'stun:stun1.l.google.com:19302' },
+      
+      // Your TURN server
+      {
+        urls: TURN_SERVER_URL,
+        username: TURN_USERNAME,
+        credential: TURN_PASSWORD
+      },
+      {
+        urls: TURN_SERVER_URL.replace('turn:', 'turns:').replace(':3478', ':5349'),
+        username: TURN_USERNAME,
+        credential: TURN_PASSWORD
+      }
+    ];
+
+    res.json({
+      iceServers,
+      success: true
+    });
+  } catch (error) {
+    console.error('Error providing ICE servers:', error);
+    res.status(500).json({
+      error: 'Failed to get ICE servers',
+      iceServers: [
+        // Fallback to public STUN only
+        { urls: 'stun:stun.l.google.com:19302' }
+      ]
+    });
+  }
+});
+
+// For Twilio TURN service (production recommended)
+const twilio = require('twilio');
+
+app.get('/api/turn-credentials', async (req, res) => {
+  try {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+    
+    if (!accountSid || !authToken) {
+      throw new Error('Twilio credentials not configured');
+    }
+    
+    const client = twilio(accountSid, authToken);
+    const token = await client.tokens.create();
+    
+    res.json({
+      iceServers: token.iceServers,
+      success: true
+    });
+  } catch (error) {
+    console.error('Error getting Twilio TURN credentials:', error);
+    
+    // Fallback to your own TURN server or public STUN
+    res.json({
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        {
+          urls: TURN_SERVER_URL,
+          username: TURN_USERNAME,
+          credential: TURN_PASSWORD
+        }
+      ],
+      success: false,
+      fallback: true
+    });
+  }
+});
 const server = http.createServer(app);
 
 // Models
@@ -275,5 +348,6 @@ app.get('/api/debug/video-status', (req, res) => {
     }))
   });
 });
+
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);

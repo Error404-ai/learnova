@@ -46,15 +46,16 @@ const mediaConfig = {
     listenIps: [
       {
         ip: '0.0.0.0',
-        announcedIp: process.env.ANNOUNCED_IP || '51.20.245.210',
+       announcedIp: process.env.AWS_PUBLIC_IP || process.env.ANNOUNCED_IP,
       },
     ],
     maxIncomingBitrate: 1500000,
     initialAvailableOutgoingBitrate: 1000000,
     enableUdp: true,
     enableTcp: true,
-    preferUdp: true, // Changed back to prefer UDP
-    enableSctp: false,
+    preferUdp: false, // Changed to false
+    preferTcp: true,  // Added this
+    enableSctp: true,
     iceConsentTimeout: 30,
     enableIceRestart: true,
     portRange: {
