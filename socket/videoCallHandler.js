@@ -60,7 +60,7 @@ const mediaConfig = {
     enableIceRestart: true,
     portRange: {
       min: 10000,
-      max: 10100
+      max: 20000
     }
   },
 };
