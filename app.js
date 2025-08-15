@@ -185,6 +185,15 @@ const classRoutes = require('./routes/classroutes');
 const assignmentRoutes = require('./routes/assignmentroutes');
 const meetingRoutes = require('./routes/meetingRoutes');
 const turnRoutes = require('./routes/turn')
+try {
+  const turnRoutes = require('./routes/turn');
+  console.log("✅ TURN routes loaded successfully");
+  
+  app.use("/api", turnRoutes);
+  console.log("✅ TURN routes mounted on /api");
+} catch (error) {
+  console.error("❌ Failed to load TURN routes:", error.message);
+}
 
 app.use("/api", turnRoutes);
 app.use('/api/auth', authRoutes);
