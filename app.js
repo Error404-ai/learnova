@@ -20,23 +20,33 @@ dotenv.config();
 const app = express();
 app.get('/api/ice-servers', (req, res) => {
   try {
-    const iceServers = [
-      // Public STUN servers
+    const iceServers = [];
+    
+    // Always include public STUN servers
+    iceServers.push(
       { urls: 'stun:stun.l.google.com:19302' },
-      { urls: 'stun:stun1.l.google.com:19302' },
-      
-      // Your TURN server
-      {
-        urls: TURN_SERVER_URL,
-        username: TURN_USERNAME,
-        credential: TURN_PASSWORD
-      },
-      {
-        urls: TURN_SERVER_URL.replace('turn:', 'turns:').replace(':3478', ':5349'),
-        username: TURN_USERNAME,
-        credential: TURN_PASSWORD
-      }
-    ];
+      { urls: 'stun:stun1.l.google.com:19302' }
+    );
+    
+    // Add your TURN server if configured
+    const TURN_SERVER_URL = process.env.TURN_SERVER_URL;
+    const TURN_USERNAME = process.env.TURN_USERNAME;
+    const TURN_PASSWORD = process.env.TURN_PASSWORD;
+    
+    if (TURN_SERVER_URL && TURN_USERNAME && TURN_PASSWORD) {
+      iceServers.push(
+        {
+          urls: TURN_SERVER_URL,
+          username: TURN_USERNAME,
+          credential: TURN_PASSWORD
+        },
+        {
+          urls: TURN_SERVER_URL.replace('turn:', 'turns:').replace(':3478', ':5349'),
+          username: TURN_USERNAME,
+          credential: TURN_PASSWORD
+        }
+      );
+    }
 
     res.json({
       iceServers,
@@ -53,7 +63,6 @@ app.get('/api/ice-servers', (req, res) => {
     });
   }
 });
-
 const server = http.createServer(app);
 
 // Models
