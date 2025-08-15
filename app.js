@@ -184,18 +184,61 @@ const userRoutes = require("./routes/userroutes");
 const classRoutes = require('./routes/classroutes');
 const assignmentRoutes = require('./routes/assignmentroutes');
 const meetingRoutes = require('./routes/meetingRoutes');
-const turnRoutes = require('./routes/turn')
-try {
-  const turnRoutes = require('./routes/turn');
-  console.log("✅ TURN routes loaded successfully");
-  
-  app.use("/api", turnRoutes);
-  console.log("✅ TURN routes mounted on /api");
-} catch (error) {
-  console.error("❌ Failed to load TURN routes:", error.message);
-}
+// const turnRoutes = require('./routes/turn')
+// Add this directly in your app.js right after your existing routes
+// Place this BEFORE your existing API endpoints
 
-app.use("/api", turnRoutes);
+app.get('/api/turn-credentials', async (req, res) => {
+  console.log('🔄 Direct TURN credentials request received');
+  
+  try {
+    const accountSid = process.env.TWILIO_ACCOUNT_SID;
+    const authToken = process.env.TWILIO_AUTH_TOKEN;
+
+    if (!accountSid || !authToken) {
+      console.log('❌ Twilio credentials not configured');
+      return res.status(400).json({
+        success: false,
+        message: 'Twilio credentials not configured',
+        iceServers: [
+          { urls: 'stun:stun.l.google.com:19302' },
+          { urls: 'stun:stun1.l.google.com:19302' }
+        ]
+      });
+    }
+
+    const twilio = require('twilio');
+    const client = twilio(accountSid, authToken);
+    
+    console.log('🔄 Creating Twilio token...');
+    const token = await client.tokens.create();
+    
+    console.log('✅ Twilio token created successfully');
+    res.json({
+      success: true,
+      iceServers: token.iceServers,
+    });
+    
+  } catch (err) {
+    console.error('❌ Twilio error:', err);
+    res.status(500).json({
+      success: false,
+      message: err.message,
+      iceServers: [
+        { urls: 'stun:stun.l.google.com:19302' },
+        { urls: 'stun:stun1.l.google.com:19302' }
+      ]
+    });
+  }
+});
+
+// Test route
+app.get('/api/test-turn', (req, res) => {
+  console.log('🧪 Test TURN route accessed');
+  res.json({ message: 'TURN test route working!', timestamp: new Date() });
+});
+
+// app.use("/api", turnRoutes);
 app.use('/api/auth', authRoutes);
 app.use("/user", userRoutes);
 app.use('/api/class', classRoutes);
