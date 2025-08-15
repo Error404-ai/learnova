@@ -209,16 +209,25 @@ app.get('/api/turn-credentials', async (req, res) => {
 
     const twilio = require('twilio');
     const client = twilio(accountSid, authToken);
-    
+
     console.log('🔄 Creating Twilio token...');
     const token = await client.tokens.create();
-    
+
     console.log('✅ Twilio token created successfully');
+
+    // Reorder: TCP 443 → TCP 3478 → UDP → STUN
+    const reorderedIceServers = [
+      ...token.iceServers.filter(s => s.urls.includes('transport=tcp') && s.urls.includes(':443')),
+      ...token.iceServers.filter(s => s.urls.includes('transport=tcp') && !s.urls.includes(':443')),
+      ...token.iceServers.filter(s => s.urls.includes('transport=udp')),
+      ...token.iceServers.filter(s => s.urls.startsWith('stun:'))
+    ];
+
     res.json({
       success: true,
-      iceServers: token.iceServers,
+      iceServers: reorderedIceServers
     });
-    
+
   } catch (err) {
     console.error('❌ Twilio error:', err);
     res.status(500).json({
