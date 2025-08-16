@@ -215,14 +215,16 @@ app.get('/api/turn-credentials', async (req, res) => {
 
     console.log('✅ Twilio token created successfully');
 
-    // Reorder: TCP 443 → TCP 3478 → UDP → STUN
     const reorderedIceServers = [
-      ...token.iceServers.filter(s => s.urls.includes('transport=tcp') && s.urls.includes(':443')),
-      ...token.iceServers.filter(s => s.urls.includes('transport=tcp') && !s.urls.includes(':443')),
-      ...token.iceServers.filter(s => s.urls.includes('transport=udp')),
-      ...token.iceServers.filter(s => s.urls.startsWith('stun:'))
-    ];
-
+  // Add Google STUN servers first for basic connectivity
+  { urls: 'stun:stun.l.google.com:19302' },
+  { urls: 'stun:stun1.l.google.com:19302' },
+  // Then Twilio servers (TCP 443 prioritized for restrictive networks)
+  ...token.iceServers.filter(s => s.urls.includes('transport=tcp') && s.urls.includes(':443')),
+  ...token.iceServers.filter(s => s.urls.includes('transport=tcp') && !s.urls.includes(':443')),
+  ...token.iceServers.filter(s => s.urls.includes('transport=udp')),
+  ...token.iceServers.filter(s => s.urls.startsWith('stun:'))
+];
     res.json({
       success: true,
       iceServers: reorderedIceServers
