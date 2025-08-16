@@ -53,8 +53,8 @@ const mediaConfig = {
     initialAvailableOutgoingBitrate: 1000000,
     enableUdp: true,
     enableTcp: true,
-    preferUdp: true, // Changed to false
-    preferTcp: false,  // Added this
+    preferUdp: true,
+    preferTcp: false,
     enableSctp: true,
     iceConsentTimeout: 30,
     enableIceRestart: true,
@@ -72,6 +72,9 @@ const peerTransports = new Map();
 const peerProducers = new Map();
 const peerConsumers = new Map();
 const videoPeers = new Map();
+
+// Producer health monitoring
+const producerHealthCheck = new Map();
 
 // Initialize MediaSoup worker
 async function initializeMediaSoup() {
@@ -132,25 +135,103 @@ async function getClassRouter(classId) {
   }
 }
 
-// Inform existing peers of new producer
-async function informExistingPeersOfNewProducer(newPeerSocketId, classId, newProducer, io) {
+// Enhanced producer notification with validation
+async function notifyPeersOfProducerChange(socketId, classId, producer, action, io) {
   try {
-    const classPeers = Array.from(videoPeers.values())
-      .filter(p => p.classId === classId && p.socketId !== newPeerSocketId);
+    const peer = videoPeers.get(socketId);
+    if (!peer) return;
 
-    console.log(`📡 Informing ${classPeers.length} existing peers of new producer`);
+    const classPeers = Array.from(videoPeers.values())
+      .filter(p => p.classId === classId && p.socketId !== socketId);
+
+    console.log(`📡 ${action} - Notifying ${classPeers.length} peers about producer ${producer.id}`);
 
     for (const existingPeer of classPeers) {
       const existingSocket = io.sockets.sockets.get(existingPeer.socketId);
       if (!existingSocket || !existingSocket.connected) continue;
 
-      existingSocket.emit('new_producer', {
-        producerId: newProducer.id,
-        kind: newProducer.kind,
-        producerSocketId: newPeerSocketId,
-        producerName: videoPeers.get(newPeerSocketId)?.userName,
-      });
+      if (action === 'created') {
+        // Double-check producer is still valid before notifying
+        if (!producer.closed) {
+          existingSocket.emit('new_producer', {
+            producerId: producer.id,
+            kind: producer.kind,
+            producerSocketId: socketId,
+            producerName: peer.userName,
+          });
+        }
+      } else if (action === 'closed') {
+        existingSocket.emit('producer_closed', {
+          producerId: producer.id,
+          kind: producer.kind,
+          socketId: socketId,
+          producerSocketId: socketId
+        });
+      }
     }
+  } catch (error) {
+    console.error('❌ Error notifying peers of producer change:', error);
+  }
+}
+
+// Enhanced producer health monitoring
+function startProducerHealthMonitoring(socketId, producer, classId, io) {
+  const healthCheckId = `${socketId}-${producer.kind}`;
+  
+  // Clear any existing health check
+  if (producerHealthCheck.has(healthCheckId)) {
+    clearInterval(producerHealthCheck.get(healthCheckId));
+  }
+
+  const healthInterval = setInterval(() => {
+    if (producer.closed) {
+      console.log(`💔 Producer ${producer.id} detected as closed during health check`);
+      notifyPeersOfProducerChange(socketId, classId, producer, 'closed', io);
+      clearInterval(healthInterval);
+      producerHealthCheck.delete(healthCheckId);
+      return;
+    }
+
+    // Check transport state
+    const transports = peerTransports.get(socketId);
+    if (!transports || !transports.sendTransport || transports.sendTransport.closed) {
+      console.log(`💔 Transport closed detected for producer ${producer.id}`);
+      if (!producer.closed) {
+        producer.close();
+      }
+      notifyPeersOfProducerChange(socketId, classId, producer, 'closed', io);
+      clearInterval(healthInterval);
+      producerHealthCheck.delete(healthCheckId);
+    }
+  }, 5000); // Check every 5 seconds
+
+  producerHealthCheck.set(healthCheckId, healthInterval);
+
+  // Auto-cleanup after 30 minutes
+  setTimeout(() => {
+    if (producerHealthCheck.has(healthCheckId)) {
+      clearInterval(producerHealthCheck.get(healthCheckId));
+      producerHealthCheck.delete(healthCheckId);
+    }
+  }, 30 * 60 * 1000);
+}
+
+// Inform existing peers of new producer
+async function informExistingPeersOfNewProducer(newPeerSocketId, classId, newProducer, io) {
+  try {
+    // Add delay to ensure producer is fully ready
+    await new Promise(resolve => setTimeout(resolve, 100));
+    
+    if (newProducer.closed) {
+      console.warn('⚠️ Producer closed before informing peers');
+      return;
+    }
+
+    await notifyPeersOfProducerChange(newPeerSocketId, classId, newProducer, 'created', io);
+    
+    // Start health monitoring
+    startProducerHealthMonitoring(newPeerSocketId, newProducer, classId, io);
+    
   } catch (error) {
     console.error('❌ Error informing existing peers of new producer:', error);
   }
@@ -209,8 +290,6 @@ function informNewPeerOfExistingProducers(newPeerSocketId, classId, io) {
       closed: closedProducers,
       toSend: producers.length
     });
-    
-    console.log(`${logPrefix} 📋 Producers to send:`, producers.map(p => `${p.kind} from ${p.producerName}`));
 
     const newPeerSocket = io.sockets.sockets.get(newPeerSocketId);
     if (newPeerSocket && newPeerSocket.connected) {
@@ -226,8 +305,7 @@ function informNewPeerOfExistingProducers(newPeerSocketId, classId, io) {
   }
 }
 
-
-// Cleanup video call resources
+// Enhanced cleanup with proper peer notification
 async function cleanupVideoCallResources(socketId, io) {
   try {
     console.log(`🧹 Starting cleanup for socket ${socketId}`);
@@ -240,11 +318,15 @@ async function cleanupVideoCallResources(socketId, io) {
       if (producersToClose) {
         for (const [kind, producer] of Object.entries(producersToClose)) {
           if (producer && !producer.closed) {
-            io.to(`class_${peer.classId}`).emit('producer_closed', { 
-              producerId: producer.id,
-              kind: kind,
-              socketId: socketId
-            });
+            // Notify peers first
+            await notifyPeersOfProducerChange(socketId, peer.classId, producer, 'closed', io);
+            
+            // Clean up health monitoring
+            const healthCheckId = `${socketId}-${kind}`;
+            if (producerHealthCheck.has(healthCheckId)) {
+              clearInterval(producerHealthCheck.get(healthCheckId));
+              producerHealthCheck.delete(healthCheckId);
+            }
           }
         }
       }
@@ -427,17 +509,46 @@ const setupVideoCallHandlers = (socket, io) => {
                 informNewPeerOfExistingProducers(socket.id, peer.classId, io);
               }, 500);
             }
+          } else if (dtlsState === 'failed' || dtlsState === 'closed') {
+            console.error(`❌ ${direction} transport DTLS failed/closed for ${peer.userName}`);
+            // Clean up any producers on this transport
+            if (direction === 'send') {
+              const producers = peerProducers.get(socket.id);
+              if (producers) {
+                Object.entries(producers).forEach(async ([kind, producer]) => {
+                  if (producer && !producer.closed) {
+                    await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+                    producer.close();
+                  }
+                });
+              }
+            }
           }
         });
 
         transport.on('icestatechange', (iceState) => {
           console.log(`🧊 ${direction} transport ICE: ${iceState} for ${peer.userName}`);
+          if (iceState === 'failed' || iceState === 'disconnected') {
+            console.error(`❌ ${direction} transport ICE failed for ${peer.userName}`);
+          }
         });
 
         transport.on('connectionstatechange', (connectionState) => {
           console.log(`🔗 ${direction} transport connection: ${connectionState} for ${peer.userName}`);
           if (connectionState === 'failed') {
             console.error(`❌ ${direction} transport connection failed for ${peer.userName}`);
+            // Trigger cleanup for failed transports
+            if (direction === 'send') {
+              const producers = peerProducers.get(socket.id);
+              if (producers) {
+                Object.entries(producers).forEach(async ([kind, producer]) => {
+                  if (producer && !producer.closed) {
+                    await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+                    producer.close();
+                  }
+                });
+              }
+            }
           }
         });
       };
@@ -476,7 +587,7 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // Connect transport
+  // Enhanced connect transport with better error handling
   socket.on('connect_transport', async (data) => {
     try {
       const { transportId, dtlsParameters, direction } = data;
@@ -496,24 +607,30 @@ const setupVideoCallHandlers = (socket, io) => {
       console.log(`🔧 Connecting ${direction} transport for ${peer?.userName}`);
 
       await transport.connect({ dtlsParameters });
-        if (transport.dtlsState !== 'connected') {
-      console.log(`⏳ Waiting for DTLS connection...`);
-      await new Promise((resolve, reject) => {
-        const timeout = setTimeout(() => reject(new Error('DTLS timeout')), 10000);
-        const handler = (state) => {
-          if (state === 'connected') {
-            clearTimeout(timeout);
+
+      // Enhanced DTLS connection verification
+      if (transport.dtlsState !== 'connected') {
+        console.log(`⏳ Waiting for DTLS connection...`);
+        await new Promise((resolve, reject) => {
+          const timeout = setTimeout(() => {
             transport.off('dtlsstatechange', handler);
-            resolve();
-          } else if (state === 'failed' || state === 'closed') {
-            clearTimeout(timeout);
-            transport.off('dtlsstatechange', handler);
-            reject(new Error(`DTLS failed: ${state}`));
-          }
-        };
-        transport.on('dtlsstatechange', handler);
-      });
-    }
+            reject(new Error('DTLS connection timeout'));
+          }, 15000); // Increased timeout
+
+          const handler = (state) => {
+            if (state === 'connected') {
+              clearTimeout(timeout);
+              transport.off('dtlsstatechange', handler);
+              resolve();
+            } else if (state === 'failed' || state === 'closed') {
+              clearTimeout(timeout);
+              transport.off('dtlsstatechange', handler);
+              reject(new Error(`DTLS connection failed: ${state}`));
+            }
+          };
+          transport.on('dtlsstatechange', handler);
+        });
+      }
 
       socket.emit('transport_connected', {
         transportId,
@@ -537,371 +654,405 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
-  // Start producing
+  // Enhanced start producing with better lifecycle management
   socket.on('start_producing', async (data) => {
-  try {
-    const { kind, rtpParameters } = data;
-    const peer = videoPeers.get(socket.id);
-    const transports = peerTransports.get(socket.id);
+    try {
+      const { kind, rtpParameters } = data;
+      const peer = videoPeers.get(socket.id);
+      const transports = peerTransports.get(socket.id);
 
-    if (!peer || !transports) {
-      return sendError('Peer or transport not found');
-    }
-
-    console.log(`🎬 Creating ${kind} producer for ${peer.userName}`);
-
-    const producer = await transports.sendTransport.produce({
-      kind,
-      rtpParameters,
-    });
-
-    producer.on('transportclose', () => {
-      console.log(`Producer transport closed: ${kind} for ${peer.userName}`);
-      // Clean up from storage
-      const userProducers = peerProducers.get(socket.id);
-      if (userProducers && userProducers[kind]) {
-        delete userProducers[kind];
-        if (Object.keys(userProducers).length === 0) {
-          peerProducers.delete(socket.id);
-        }
+      if (!peer || !transports) {
+        return sendError('Peer or transport not found');
       }
-    });
 
-    // Store the producer
-    if (!peerProducers.has(socket.id)) {
-      peerProducers.set(socket.id, {});
-    }
-    const producers = peerProducers.get(socket.id);
-    producers[kind] = producer;
+      console.log(`🎬 Creating ${kind} producer for ${peer.userName}`);
 
-    console.log(`✅ Producer created: ${kind} for ${peer.userName} - ID: ${producer.id}`);
-
-    // Send success response first
-    socket.emit('producer_created', {
-      kind,
-      producerId: producer.id,
-      success: true
-    });
-
-    // Then inform other peers
-    setTimeout(() => {
-      console.log(`📢 Informing other peers about new ${kind} producer from ${peer.userName}`);
-      informExistingPeersOfNewProducer(socket.id, peer.classId, producer, io);
-    }, 100);
-
-  } catch (error) {
-    console.error('❌ Error creating producer:', error);
-    sendError(`Failed to create producer: ${error.message}`);
-  }
-});
-
-// Add debugging endpoint to check server state
-socket.on('debug_server_state', () => {
-  const peer = videoPeers.get(socket.id);
-  if (peer) {
-    const debugInfo = {
-      peer: {
-        socketId: socket.id,
-        userName: peer.userName,
-        classId: peer.classId
-      },
-      transports: {
-        hasTransports: peerTransports.has(socket.id),
-        sendTransportClosed: peerTransports.get(socket.id)?.sendTransport?.closed,
-        recvTransportClosed: peerTransports.get(socket.id)?.recvTransport?.closed
-      },
-      producers: {
-        count: peerProducers.has(socket.id) ? Object.keys(peerProducers.get(socket.id)).length : 0,
-        kinds: peerProducers.has(socket.id) ? Object.keys(peerProducers.get(socket.id)) : []
-      },
-      consumers: {
-        count: peerConsumers.has(socket.id) ? peerConsumers.get(socket.id).length : 0
-      },
-      classmates: Array.from(videoPeers.entries())
-        .filter(([_, p]) => p.classId === peer.classId && p.socketId !== socket.id)
-        .map(([socketId, p]) => ({
-          socketId,
-          userName: p.userName,
-          hasProducers: peerProducers.has(socketId),
-          producerKinds: peerProducers.has(socketId) ? Object.keys(peerProducers.get(socketId)) : []
-        }))
-    };
-    
-    console.log(`🐛 Debug info for ${peer.userName}:`, JSON.stringify(debugInfo, null, 2));
-    socket.emit('debug_server_response', debugInfo);
-  }
-});
-
-// Enhanced start_consuming handler with detailed logging
-socket.on('start_consuming', async (data) => {
-  const logPrefix = `[CONSUME-SERVER]`;
-  console.log(`${logPrefix} 📥 Consume request received:`, {
-    producerId: data.producerId,
-    hasRtpCapabilities: !!data.consumerRtpCapabilities,
-    socketId: socket.id
-  });
-
-  try {
-    const { producerId, consumerRtpCapabilities } = data;
-    const peer = videoPeers.get(socket.id);
-    const transports = peerTransports.get(socket.id);
-
-    // Enhanced validation
-    if (!peer) {
-      console.error(`${logPrefix} ❌ Peer not found for socket ${socket.id}`);
-      return socket.emit('consumer_creation_failed', {
-        producerId,
-        reason: 'Peer not found',
-        code: 'PEER_NOT_FOUND'
+      const producer = await transports.sendTransport.produce({
+        kind,
+        rtpParameters,
       });
-    }
 
-    if (!transports) {
-      console.error(`${logPrefix} ❌ Transports not found for peer ${peer.userName}`);
-      return socket.emit('consumer_creation_failed', {
-        producerId,
-        reason: 'Transport not found',
-        code: 'TRANSPORT_NOT_FOUND'
-      });
-    }
-
-    const recvTransport = transports.recvTransport;
-    if (!recvTransport || recvTransport.closed) {
-      console.error(`${logPrefix} ❌ Receive transport not available for ${peer.userName}`);
-      return socket.emit('consumer_creation_failed', {
-        producerId,
-        reason: 'Receive transport not available',
-        code: 'TRANSPORT_NOT_AVAILABLE'
-      });
-    }
-
-    if (!consumerRtpCapabilities) {
-      console.error(`${logPrefix} ❌ No RTP capabilities provided`);
-      return socket.emit('consumer_creation_failed', {
-        producerId,
-        reason: 'No RTP capabilities provided',
-        code: 'NO_RTP_CAPABILITIES'
-      });
-    }
-
-    // Find the producer to consume with enhanced search
-    let producerToConsume;
-    let producerPeer;
-    let producerKind;
-
-    console.log(`${logPrefix} 🔍 Searching for producer ${producerId}...`);
-    console.log(`${logPrefix} 📊 Total peer producers to search:`, peerProducers.size);
-
-    for (const [socketId, producers] of peerProducers.entries()) {
-      const peerName = videoPeers.get(socketId)?.userName || 'Unknown';
-      console.log(`${logPrefix} 🔍 Checking producers for peer ${peerName} (${socketId}):`, Object.keys(producers || {}));
-      
-      if (producers) {
-        for (const [kind, producer] of Object.entries(producers)) {
-          console.log(`${logPrefix} 🔍 Checking ${kind} producer:`, {
-            id: producer?.id,
-            closed: producer?.closed,
-            matches: producer?.id === producerId
-          });
-          
-          if (producer && producer.id === producerId) {
-            producerToConsume = producer;
-            producerPeer = videoPeers.get(socketId);
-            producerKind = kind;
-            console.log(`${logPrefix} ✅ Found producer!`, {
-              kind,
-              producerId: producer.id,
-              fromPeer: producerPeer?.userName
-            });
-            break;
+      // Enhanced producer event handling
+      producer.on('transportclose', async () => {
+        console.log(`Producer transport closed: ${kind} for ${peer.userName}`);
+        
+        // Notify peers immediately
+        await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+        
+        // Clean up from storage
+        const userProducers = peerProducers.get(socket.id);
+        if (userProducers && userProducers[kind]) {
+          delete userProducers[kind];
+          if (Object.keys(userProducers).length === 0) {
+            peerProducers.delete(socket.id);
           }
         }
-        if (producerToConsume) break;
-      }
-    }
 
-    if (!producerToConsume || producerToConsume.closed) {
-      console.error(`${logPrefix} ❌ Producer not found or closed:`, {
-        found: !!producerToConsume,
-        closed: producerToConsume?.closed
+        // Clean up health monitoring
+        const healthCheckId = `${socket.id}-${kind}`;
+        if (producerHealthCheck.has(healthCheckId)) {
+          clearInterval(producerHealthCheck.get(healthCheckId));
+          producerHealthCheck.delete(healthCheckId);
+        }
       });
-      
-      // Log all available producers for debugging
-      console.log(`${logPrefix} 📋 Available producers:`);
+
+      producer.on('trackended', async () => {
+        console.log(`Producer track ended: ${kind} for ${peer.userName}`);
+        
+        // Notify peers
+        await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+        
+        // Clean up
+        const userProducers = peerProducers.get(socket.id);
+        if (userProducers && userProducers[kind]) {
+          delete userProducers[kind];
+        }
+      });
+
+      // Store the producer
+      if (!peerProducers.has(socket.id)) {
+        peerProducers.set(socket.id, {});
+      }
+      const producers = peerProducers.get(socket.id);
+      producers[kind] = producer;
+
+      console.log(`✅ Producer created: ${kind} for ${peer.userName} - ID: ${producer.id}`);
+
+      // Send success response first
+      socket.emit('producer_created', {
+        kind,
+        producerId: producer.id,
+        success: true
+      });
+
+      // Then inform other peers with validation
+      setTimeout(async () => {
+        if (!producer.closed && transports.sendTransport && !transports.sendTransport.closed) {
+          console.log(`📢 Informing other peers about new ${kind} producer from ${peer.userName}`);
+          await informExistingPeersOfNewProducer(socket.id, peer.classId, producer, io);
+        } else {
+          console.warn(`⚠️ Producer or transport closed before informing peers`);
+        }
+      }, 200); // Slightly increased delay
+
+    } catch (error) {
+      console.error('❌ Error creating producer:', error);
+      sendError(`Failed to create producer: ${error.message}`);
+    }
+  });
+
+  // Rest of the handlers remain the same but with enhanced error handling...
+  // (keeping the existing handlers for brevity but they should also have similar enhancements)
+
+  // Enhanced start consuming with better validation
+  socket.on('start_consuming', async (data) => {
+    const logPrefix = `[CONSUME-SERVER]`;
+    console.log(`${logPrefix} 📥 Consume request received:`, {
+      producerId: data.producerId,
+      hasRtpCapabilities: !!data.consumerRtpCapabilities,
+      socketId: socket.id
+    });
+
+    try {
+      const { producerId, consumerRtpCapabilities } = data;
+      const peer = videoPeers.get(socket.id);
+      const transports = peerTransports.get(socket.id);
+
+      // Enhanced validation
+      if (!peer) {
+        console.error(`${logPrefix} ❌ Peer not found for socket ${socket.id}`);
+        return socket.emit('consumer_creation_failed', {
+          producerId,
+          reason: 'Peer not found',
+          code: 'PEER_NOT_FOUND'
+        });
+      }
+
+      if (!transports) {
+        console.error(`${logPrefix} ❌ Transports not found for peer ${peer.userName}`);
+        return socket.emit('consumer_creation_failed', {
+          producerId,
+          reason: 'Transport not found',
+          code: 'TRANSPORT_NOT_FOUND'
+        });
+      }
+
+      const recvTransport = transports.recvTransport;
+      if (!recvTransport || recvTransport.closed) {
+        console.error(`${logPrefix} ❌ Receive transport not available for ${peer.userName}`);
+        return socket.emit('consumer_creation_failed', {
+          producerId,
+          reason: 'Receive transport not available',
+          code: 'TRANSPORT_NOT_AVAILABLE'
+        });
+      }
+
+      if (!consumerRtpCapabilities) {
+        console.error(`${logPrefix} ❌ No RTP capabilities provided`);
+        return socket.emit('consumer_creation_failed', {
+          producerId,
+          reason: 'No RTP capabilities provided',
+          code: 'NO_RTP_CAPABILITIES'
+        });
+      }
+
+      // Find the producer to consume with enhanced search
+      let producerToConsume;
+      let producerPeer;
+      let producerKind;
+
+      console.log(`${logPrefix} 🔍 Searching for producer ${producerId}...`);
+
       for (const [socketId, producers] of peerProducers.entries()) {
         const peerName = videoPeers.get(socketId)?.userName || 'Unknown';
-        for (const [kind, producer] of Object.entries(producers || {})) {
-          console.log(`${logPrefix}   - ${peerName}: ${kind} producer ${producer?.id} (closed: ${producer?.closed})`);
+        
+        if (producers) {
+          for (const [kind, producer] of Object.entries(producers)) {
+            if (producer && producer.id === producerId) {
+              // Double-check producer is still valid
+              if (!producer.closed) {
+                producerToConsume = producer;
+                producerPeer = videoPeers.get(socketId);
+                producerKind = kind;
+                console.log(`${logPrefix} ✅ Found valid producer!`, {
+                  kind,
+                  producerId: producer.id,
+                  fromPeer: producerPeer?.userName
+                });
+                break;
+              } else {
+                console.warn(`${logPrefix} ⚠️ Found producer but it's closed`);
+                return socket.emit('consumer_creation_failed', {
+                  producerId,
+                  reason: 'Producer is closed',
+                  code: 'PRODUCER_CLOSED'
+                });
+              }
+            }
+          }
+          if (producerToConsume) break;
         }
       }
-      
-      return socket.emit('consumer_creation_failed', {
-        producerId,
-        reason: 'Producer not found or closed',
-        code: 'PRODUCER_NOT_FOUND'
-      });
-    }
 
-    const router = await getClassRouter(peer.classId);
+      if (!producerToConsume) {
+        console.error(`${logPrefix} ❌ Producer not found`);
+        
+        // Log all available producers for debugging
+        console.log(`${logPrefix} 📋 Available producers:`);
+        for (const [socketId, producers] of peerProducers.entries()) {
+          const peerName = videoPeers.get(socketId)?.userName || 'Unknown';
+          for (const [kind, producer] of Object.entries(producers || {})) {
+            console.log(`${logPrefix}   - ${peerName}: ${kind} producer ${producer?.id} (closed: ${producer?.closed})`);
+          }
+        }
+        
+        return socket.emit('consumer_creation_failed', {
+          producerId,
+          reason: 'Producer not found',
+          code: 'PRODUCER_NOT_FOUND'
+        });
+      }
 
-    // Check if peer can consume with detailed logging
-    console.log(`${logPrefix} 🧪 Checking if can consume...`);
-    const canConsume = router.canConsume({
-      producerId: producerToConsume.id,
-      rtpCapabilities:consumerRtpCapabilities
-    });
+      const router = await getClassRouter(peer.classId);
 
-    if (!canConsume) {
-      console.error(`${logPrefix} ❌ Cannot consume - incompatible capabilities`);
-      console.log(`${logPrefix} 📊 Consumer RTP capabilities:`, JSON.stringify(consumerRtpCapabilities, null, 2));
-      
-      return socket.emit('consumer_creation_failed', {
-        producerId,
-        reason: 'Cannot consume this producer - incompatible capabilities',
-        code: 'INCOMPATIBLE_CAPABILITIES'
-      });
-    }
-
-    console.log(`${logPrefix} ✅ Can consume! Creating consumer for ${peer.userName} from ${producerPeer?.userName} (${producerKind})`);
-
-    // Create the consumer with error handling
-    let consumer;
-    try {
-      consumer = await recvTransport.consume({
+      // Check if peer can consume with detailed logging
+      console.log(`${logPrefix} 🧪 Checking if can consume...`);
+      const canConsume = router.canConsume({
         producerId: producerToConsume.id,
-        rtpCapabilities: consumerRtpCapabilities,
-        paused: false, // Start unpaused
+        rtpCapabilities: consumerRtpCapabilities
       });
 
-      console.log(`${logPrefix} 🎉 Consumer created successfully:`, {
+      if (!canConsume) {
+        console.error(`${logPrefix} ❌ Cannot consume - incompatible capabilities`);
+        return socket.emit('consumer_creation_failed', {
+          producerId,
+          reason: 'Cannot consume this producer - incompatible capabilities',
+          code: 'INCOMPATIBLE_CAPABILITIES'
+        });
+      }
+
+      console.log(`${logPrefix} ✅ Can consume! Creating consumer for ${peer.userName} from ${producerPeer?.userName} (${producerKind})`);
+
+      // Create the consumer with error handling
+      let consumer;
+      try {
+        consumer = await recvTransport.consume({
+          producerId: producerToConsume.id,
+          rtpCapabilities: consumerRtpCapabilities,
+          paused: false,
+        });
+
+        console.log(`${logPrefix} 🎉 Consumer created successfully:`, {
+          consumerId: consumer.id,
+          producerId: consumer.producerId,
+          kind: consumer.kind,
+          paused: consumer.paused
+        });
+
+      } catch (consumeError) {
+        console.error(`${logPrefix} ❌ Error creating consumer:`, consumeError);
+        return socket.emit('consumer_creation_failed', {
+          producerId,
+          reason: `Consumer creation failed: ${consumeError.message}`,
+          code: 'CONSUMER_CREATION_ERROR',
+          error: consumeError.message
+        });
+      }
+
+      // Enhanced consumer event handlers
+      consumer.on('transportclose', () => {
+        console.log(`${logPrefix} 🚪 Consumer transport closed: ${consumer.kind} for ${peer.userName}`);
+        
+        // Clean up consumer from storage
+        const consumers = peerConsumers.get(socket.id) || [];
+        const index = consumers.findIndex(c => c.id === consumer.id);
+        if (index !== -1) {
+          consumers.splice(index, 1);
+          peerConsumers.set(socket.id, consumers);
+        }
+      });
+
+      consumer.on('producerclose', () => {
+        console.log(`${logPrefix} 👋 Producer closed, cleaning up consumer: ${consumer.kind} for ${peer.userName}`);
+        
+        // Notify client that producer was closed
+        socket.emit('producer_closed', {
+          consumerId: consumer.id,
+          producerId,
+          kind: consumer.kind,
+          reason: 'Producer closed'
+        });
+
+        // Clean up consumer
+        const consumers = peerConsumers.get(socket.id) || [];
+        const index = consumers.findIndex(c => c.id === consumer.id);
+        if (index !== -1) {
+          consumers.splice(index, 1);
+          peerConsumers.set(socket.id, consumers);
+        }
+      });
+
+      consumer.on('producerpause', () => {
+        console.log(`${logPrefix} ⏸️ Producer paused, pausing consumer: ${consumer.kind}`);
+        socket.emit('producer_paused', {
+          consumerId: consumer.id,
+          producerId,
+          kind: consumer.kind
+        });
+      });
+
+      consumer.on('producerresume', () => {
+        console.log(`${logPrefix} ▶️ Producer resumed, resuming consumer: ${consumer.kind}`);
+        socket.emit('producer_resumed', {
+          consumerId: consumer.id,
+          producerId,
+          kind: consumer.kind
+        });
+      });
+
+      // Store the consumer
+      const consumers = peerConsumers.get(socket.id) || [];
+      consumers.push(consumer);
+      peerConsumers.set(socket.id, consumers);
+
+      // Send success response to client
+      const response = {
         consumerId: consumer.id,
-        producerId: consumer.producerId,
+        producerId,
         kind: consumer.kind,
-        paused: consumer.paused
+        rtpParameters: consumer.rtpParameters,
+        success: true,
+        paused: consumer.paused,
+        producerPeer: producerPeer ? {
+          socketId: producerPeer.socketId,
+          userName: producerPeer.userName,
+          userId: producerPeer.userId
+        } : null
+      };
+
+      console.log(`${logPrefix} 📤 Sending consumer_created response:`, {
+        consumerId: response.consumerId,
+        kind: response.kind,
+        paused: response.paused,
+        producerPeer: response.producerPeer?.userName
       });
 
-    } catch (consumeError) {
-      console.error(`${logPrefix} ❌ Error creating consumer:`, consumeError);
-      return socket.emit('consumer_creation_failed', {
-        producerId,
-        reason: `Consumer creation failed: ${consumeError.message}`,
-        code: 'CONSUMER_CREATION_ERROR',
-        error: consumeError.message
+      socket.emit('consumer_created', response);
+
+      console.log(`${logPrefix} ✅ Consumer creation completed for ${consumer.kind} from ${producerPeer?.userName} to ${peer.userName}`);
+
+    } catch (error) {
+      console.error(`${logPrefix} ❌ Unexpected error in start_consuming:`, error);
+      socket.emit('consumer_creation_failed', {
+        producerId: data.producerId,
+        reason: `Unexpected error: ${error.message}`,
+        code: 'UNEXPECTED_ERROR',
+        error: error.message
       });
     }
+  });
 
-    // Set up consumer event handlers
-    consumer.on('transportclose', () => {
-      console.log(`${logPrefix} 🚪 Consumer transport closed: ${consumer.kind} for ${peer.userName}`);
+  // Get existing producers - Enhanced version
+  socket.on('get_existing_producers', () => {
+    const peer = videoPeers.get(socket.id);
+    if (peer) {
+      console.log(`📡 Manual request for existing producers from ${peer.userName} (${socket.id})`);
+      console.log(`🏫 Class ID: ${peer.classId}`);
       
-      // Clean up consumer from storage
-      const consumers = peerConsumers.get(socket.id) || [];
-      const index = consumers.findIndex(c => c.id === consumer.id);
-      if (index !== -1) {
-        consumers.splice(index, 1);
-        peerConsumers.set(socket.id, consumers);
-      }
-    });
-
-    consumer.on('producerclose', () => {
-      console.log(`${logPrefix} 👋 Producer closed, cleaning up consumer: ${consumer.kind} for ${peer.userName}`);
+      // Add debug info about current state
+      console.log(`🔍 Current peers in class:`, Array.from(videoPeers.entries())
+        .filter(([_, p]) => p.classId === peer.classId)
+        .map(([socketId, p]) => ({ 
+          socketId, 
+          name: p.userName, 
+          hasProducers: peerProducers.has(socketId),
+          producers: peerProducers.has(socketId) ? Object.keys(peerProducers.get(socketId)) : []
+        }))
+      );
       
-      // Notify client that producer was closed
-      socket.emit('producer_closed', {
-        consumerId: consumer.id,
-        producerId,
-        kind: consumer.kind,
-        reason: 'Producer closed'
-      });
+      informNewPeerOfExistingProducers(socket.id, peer.classId, io);
+    } else {
+      console.warn(`⚠️ get_existing_producers called but peer not found for socket ${socket.id}`);
+      socket.emit('existing_producers', []);
+    }
+  });
 
-      // Clean up consumer
-      const consumers = peerConsumers.get(socket.id) || [];
-      const index = consumers.findIndex(c => c.id === consumer.id);
-      if (index !== -1) {
-        consumers.splice(index, 1);
-        peerConsumers.set(socket.id, consumers);
-      }
-    });
-
-    consumer.on('producerpause', () => {
-      console.log(`${logPrefix} ⏸️ Producer paused, pausing consumer: ${consumer.kind}`);
-      socket.emit('producer_paused', {
-        consumerId: consumer.id,
-        producerId,
-        kind: consumer.kind
-      });
-    });
-
-    consumer.on('producerresume', () => {
-      console.log(`${logPrefix} ▶️ Producer resumed, resuming consumer: ${consumer.kind}`);
-      socket.emit('producer_resumed', {
-        consumerId: consumer.id,
-        producerId,
-        kind: consumer.kind
-      });
-    });
-
-    // Store the consumer
-    const consumers = peerConsumers.get(socket.id) || [];
-    consumers.push(consumer);
-    peerConsumers.set(socket.id, consumers);
-
-    // Send success response to client
-    const response = {
-      consumerId: consumer.id,
-      producerId,
-      kind: consumer.kind,
-      rtpParameters: consumer.rtpParameters,
-      success: true,
-      paused: consumer.paused,
-      producerPeer: producerPeer ? {
-        socketId: producerPeer.socketId,
-        userName: producerPeer.userName,
-        userId: producerPeer.userId
-      } : null
-    };
-
-    console.log(`${logPrefix} 📤 Sending consumer_created response:`, {
-      consumerId: response.consumerId,
-      kind: response.kind,
-      paused: response.paused,
-      producerPeer: response.producerPeer?.userName
-    });
-
-    socket.emit('consumer_created', response);
-
-    console.log(`${logPrefix} ✅ Consumer creation completed for ${consumer.kind} from ${producerPeer?.userName} to ${peer.userName}`);
-
-  } catch (error) {
-    console.error(`${logPrefix} ❌ Unexpected error in start_consuming:`, error);
-    socket.emit('consumer_creation_failed', {
-      producerId: data.producerId,
-      reason: `Unexpected error: ${error.message}`,
-      code: 'UNEXPECTED_ERROR',
-      error: error.message
-    });
-  }
-});
-
-  // Get existing producers - MOVED INSIDE setupVideoCallHandlers
-socket.on('get_existing_producers', () => {
-  const peer = videoPeers.get(socket.id);
-  if (peer) {
-    console.log(`📡 Manual request for existing producers from ${peer.userName} (${socket.id})`);
-    console.log(`🏫 Class ID: ${peer.classId}`);
-    
-    // Add debug info about current state
-    console.log(`🔍 Current peers in class:`, Array.from(videoPeers.entries())
-      .filter(([_, p]) => p.classId === peer.classId)
-      .map(([socketId, p]) => ({ socketId, name: p.userName, hasProducers: peerProducers.has(socketId) }))
-    );
-    
-    informNewPeerOfExistingProducers(socket.id, peer.classId, io);
-  } else {
-    console.warn(`⚠️ get_existing_producers called but peer not found for socket ${socket.id}`);
-    socket.emit('existing_producers', []);
-  }
-});
+  // Debug endpoint
+  socket.on('debug_server_state', () => {
+    const peer = videoPeers.get(socket.id);
+    if (peer) {
+      const debugInfo = {
+        peer: {
+          socketId: socket.id,
+          userName: peer.userName,
+          classId: peer.classId
+        },
+        transports: {
+          hasTransports: peerTransports.has(socket.id),
+          sendTransportClosed: peerTransports.get(socket.id)?.sendTransport?.closed,
+          recvTransportClosed: peerTransports.get(socket.id)?.recvTransport?.closed
+        },
+        producers: {
+          count: peerProducers.has(socket.id) ? Object.keys(peerProducers.get(socket.id)).length : 0,
+          kinds: peerProducers.has(socket.id) ? Object.keys(peerProducers.get(socket.id)) : []
+        },
+        consumers: {
+          count: peerConsumers.has(socket.id) ? peerConsumers.get(socket.id).length : 0
+        },
+        classmates: Array.from(videoPeers.entries())
+          .filter(([_, p]) => p.classId === peer.classId && p.socketId !== socket.id)
+          .map(([socketId, p]) => ({
+            socketId,
+            userName: p.userName,
+            hasProducers: peerProducers.has(socketId),
+            producerKinds: peerProducers.has(socketId) ? Object.keys(peerProducers.get(socketId)) : []
+          }))
+      };
+      
+      console.log(`🐛 Debug info for ${peer.userName}:`, JSON.stringify(debugInfo, null, 2));
+      socket.emit('debug_server_response', debugInfo);
+    }
+  });
 
   // Leave video call
   socket.on('leave_video_call', async () => {
