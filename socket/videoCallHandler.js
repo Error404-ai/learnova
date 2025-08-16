@@ -648,6 +648,14 @@ const setupVideoCallHandlers = (socket, io) => {
     await cleanupVideoCallResources(socket.id, io);
   });
 };
+// Add this new handler:
+socket.on('get_existing_producers', () => {
+  const peer = videoPeers.get(socket.id);
+  if (peer) {
+    console.log(`📡 Manual request for existing producers from ${peer.userName}`);
+    informNewPeerOfExistingProducers(socket.id, peer.classId, io);
+  }
+});
 
 module.exports = {
   initializeMediaSoup,
