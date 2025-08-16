@@ -181,8 +181,12 @@ function informNewPeerOfExistingProducers(newPeerSocketId, classId, io) {
     console.log(`📡 Sending ${producers.length} existing producers to new peer ${newPeerSocketId}`);
 
     const newPeerSocket = io.sockets.sockets.get(newPeerSocketId);
-    if (newPeerSocket && newPeerSocket.connected && producers.length > 0) {
+    if (newPeerSocket && newPeerSocket.connected) {
+      // Always emit the event, even if there are no producers
       newPeerSocket.emit('existing_producers', producers);
+      console.log(`✅ Sent existing_producers event to ${newPeerSocketId} with ${producers.length} producers`);
+    } else {
+      console.warn(`⚠️ New peer socket ${newPeerSocketId} not found or not connected`);
     }
   } catch (error) {
     console.error('❌ Error informing new peer of existing producers:', error);
@@ -385,6 +389,7 @@ const setupVideoCallHandlers = (socket, io) => {
             // Inform about existing producers when receive transport is ready
             if (direction === 'recv') {
               setTimeout(() => {
+                console.log(`🔍 Auto-informing ${peer.userName} of existing producers after recv transport connected`);
                 informNewPeerOfExistingProducers(socket.id, peer.classId, io);
               }, 500);
             }
@@ -637,6 +642,17 @@ const setupVideoCallHandlers = (socket, io) => {
     }
   });
 
+  // Get existing producers - MOVED INSIDE setupVideoCallHandlers
+  socket.on('get_existing_producers', () => {
+    const peer = videoPeers.get(socket.id);
+    if (peer) {
+      console.log(`📡 Manual request for existing producers from ${peer.userName}`);
+      informNewPeerOfExistingProducers(socket.id, peer.classId, io);
+    } else {
+      console.warn(`⚠️ get_existing_producers called but peer not found for socket ${socket.id}`);
+    }
+  });
+
   // Leave video call
   socket.on('leave_video_call', async () => {
     await cleanupVideoCallResources(socket.id, io);
@@ -648,14 +664,6 @@ const setupVideoCallHandlers = (socket, io) => {
     await cleanupVideoCallResources(socket.id, io);
   });
 };
-// Add this new handler:
-socket.on('get_existing_producers', () => {
-  const peer = videoPeers.get(socket.id);
-  if (peer) {
-    console.log(`📡 Manual request for existing producers from ${peer.userName}`);
-    informNewPeerOfExistingProducers(socket.id, peer.classId, io);
-  }
-});
 
 module.exports = {
   initializeMediaSoup,
