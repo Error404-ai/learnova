@@ -144,7 +144,7 @@ async function informExistingPeersOfNewProducer(newPeerSocketId, classId, newPro
       const existingSocket = io.sockets.sockets.get(existingPeer.socketId);
       if (!existingSocket || !existingSocket.connected) continue;
 
-      existingSocket.emit('new_producer_available', {
+      existingSocket.emit('new_producer', {
         producerId: newProducer.id,
         kind: newProducer.kind,
         producerSocketId: newPeerSocketId,
