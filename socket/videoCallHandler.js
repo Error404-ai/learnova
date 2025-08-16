@@ -53,8 +53,8 @@ const mediaConfig = {
     initialAvailableOutgoingBitrate: 1000000,
     enableUdp: true,
     enableTcp: true,
-    preferUdp: false, // Changed to false
-    preferTcp: true,  // Added this
+    preferUdp: true, // Changed to false
+    preferTcp: false,  // Added this
     enableSctp: true,
     iceConsentTimeout: 30,
     enableIceRestart: true,
@@ -496,6 +496,24 @@ const setupVideoCallHandlers = (socket, io) => {
       console.log(`🔧 Connecting ${direction} transport for ${peer?.userName}`);
 
       await transport.connect({ dtlsParameters });
+        if (transport.dtlsState !== 'connected') {
+      console.log(`⏳ Waiting for DTLS connection...`);
+      await new Promise((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('DTLS timeout')), 10000);
+        const handler = (state) => {
+          if (state === 'connected') {
+            clearTimeout(timeout);
+            transport.off('dtlsstatechange', handler);
+            resolve();
+          } else if (state === 'failed' || state === 'closed') {
+            clearTimeout(timeout);
+            transport.off('dtlsstatechange', handler);
+            reject(new Error(`DTLS failed: ${state}`));
+          }
+        };
+        transport.on('dtlsstatechange', handler);
+      });
+    }
 
       socket.emit('transport_connected', {
         transportId,
@@ -730,7 +748,7 @@ socket.on('start_consuming', async (data) => {
     console.log(`${logPrefix} 🧪 Checking if can consume...`);
     const canConsume = router.canConsume({
       producerId: producerToConsume.id,
-      rtpCapabilities: consumerRtpCapabilities
+      rtpCapabilities:consumerRtpCapabilities
     });
 
     if (!canConsume) {
