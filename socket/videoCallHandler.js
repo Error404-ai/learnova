@@ -183,6 +183,9 @@ function startProducerHealthMonitoring(socketId, producer, classId, io) {
     clearInterval(producerHealthCheck.get(healthCheckId));
   }
 
+  let consecutiveFailures = 0;
+  const MAX_CONSECUTIVE_FAILURES = 3; // Allow 3 failures before closing
+
   const healthInterval = setInterval(() => {
     if (producer.closed) {
       console.log(`💔 Producer ${producer.id} detected as closed during health check`);
@@ -192,18 +195,42 @@ function startProducerHealthMonitoring(socketId, producer, classId, io) {
       return;
     }
 
-    // Check transport state
+    // Check transport state with tolerance
     const transports = peerTransports.get(socketId);
-    if (!transports || !transports.sendTransport || transports.sendTransport.closed) {
-      console.log(`💔 Transport closed detected for producer ${producer.id}`);
-      if (!producer.closed) {
-        producer.close();
+    if (!transports || !transports.sendTransport) {
+      consecutiveFailures++;
+      console.log(`⚠️ Transport not found for producer ${producer.id} (failure ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})`);
+      
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        console.log(`💔 Transport consistently unavailable for producer ${producer.id}, closing`);
+        if (!producer.closed) {
+          producer.close();
+        }
+        notifyPeersOfProducerChange(socketId, classId, producer, 'closed', io);
+        clearInterval(healthInterval);
+        producerHealthCheck.delete(healthCheckId);
       }
-      notifyPeersOfProducerChange(socketId, classId, producer, 'closed', io);
-      clearInterval(healthInterval);
-      producerHealthCheck.delete(healthCheckId);
+      return;
     }
-  }, 5000); // Check every 5 seconds
+
+    if (transports.sendTransport.closed) {
+      consecutiveFailures++;
+      console.log(`⚠️ Send transport closed for producer ${producer.id} (failure ${consecutiveFailures}/${MAX_CONSECUTIVE_FAILURES})`);
+      
+      if (consecutiveFailures >= MAX_CONSECUTIVE_FAILURES) {
+        console.log(`💔 Transport consistently closed for producer ${producer.id}, closing`);
+        if (!producer.closed) {
+          producer.close();
+        }
+        notifyPeersOfProducerChange(socketId, classId, producer, 'closed', io);
+        clearInterval(healthInterval);
+        producerHealthCheck.delete(healthCheckId);
+      }
+    } else {
+      // Reset failure count if transport is healthy
+      consecutiveFailures = 0;
+    }
+  }, 10000); // Increased interval to 10 seconds
 
   producerHealthCheck.set(healthCheckId, healthInterval);
 
@@ -496,65 +523,104 @@ const setupVideoCallHandlers = (socket, io) => {
       const recvTransport = await router.createWebRtcTransport(transportOptions);
 
       // Enhanced transport event handling
-      const setupTransportHandlers = (transport, direction) => {
-        transport.on('dtlsstatechange', (dtlsState) => {
-          console.log(`📡 ${direction} transport DTLS: ${dtlsState} for ${peer.userName}`);
-          if (dtlsState === 'connected') {
-            console.log(`✅ ${direction} transport fully connected for ${peer.userName}`);
-            
-            // Inform about existing producers when receive transport is ready
-            if (direction === 'recv') {
-              setTimeout(() => {
-                console.log(`🔍 Auto-informing ${peer.userName} of existing producers after recv transport connected`);
-                informNewPeerOfExistingProducers(socket.id, peer.classId, io);
-              }, 500);
+     const setupTransportHandlers = (transport, direction) => {
+  const trackingKey = `${socket.id}-${direction}`;
+  
+  transport.on('dtlsstatechange', (dtlsState) => {
+    console.log(`📡 ${direction} transport DTLS: ${dtlsState} for ${peer.userName}`);
+    
+    if (dtlsState === 'connected') {
+      console.log(`✅ ${direction} transport fully connected for ${peer.userName}`);
+      // Reset failure tracking on successful connection
+      if (transportFailureTracking.has(trackingKey)) {
+        transportFailureTracking.delete(trackingKey);
+      }
+      
+      // Inform about existing producers when receive transport is ready
+      if (direction === 'recv') {
+        setTimeout(() => {
+          console.log(`🔍 Auto-informing ${peer.userName} of existing producers after recv transport connected`);
+          informNewPeerOfExistingProducers(socket.id, peer.classId, io);
+        }, 500);
+      }
+    } else if (dtlsState === 'failed' || dtlsState === 'closed') {
+      console.error(`❌ ${direction} transport DTLS ${dtlsState} for ${peer.userName}`);
+      
+      // Track failures instead of immediately closing
+      if (!transportFailureTracking.has(trackingKey)) {
+        transportFailureTracking.set(trackingKey, { count: 0, lastFailure: Date.now() });
+      }
+      
+      const tracking = transportFailureTracking.get(trackingKey);
+      tracking.count++;
+      tracking.lastFailure = Date.now();
+      
+      console.log(`⚠️ Transport failure count: ${tracking.count} for ${peer.userName}`);
+      
+      // Only close producers after multiple failures within a short time
+      if (tracking.count >= 3 && direction === 'send') {
+        console.log(`💔 Multiple transport failures detected, closing producers for ${peer.userName}`);
+        
+        const producers = peerProducers.get(socket.id);
+        if (producers) {
+          Object.entries(producers).forEach(async ([kind, producer]) => {
+            if (producer && !producer.closed) {
+              await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+              producer.close();
             }
-          } else if (dtlsState === 'failed' || dtlsState === 'closed') {
-            console.error(`❌ ${direction} transport DTLS failed/closed for ${peer.userName}`);
-            // Clean up any producers on this transport
-            if (direction === 'send') {
-              const producers = peerProducers.get(socket.id);
-              if (producers) {
-                Object.entries(producers).forEach(async ([kind, producer]) => {
-                  if (producer && !producer.closed) {
-                    await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
-                    producer.close();
-                  }
-                });
+          });
+        }
+      }
+    }
+  });
+
+  transport.on('icestatechange', (iceState) => {
+    console.log(`🧊 ${direction} transport ICE: ${iceState} for ${peer.userName}`);
+    
+    if (iceState === 'connected' || iceState === 'completed') {
+      // Reset failure tracking on successful ICE connection
+      if (transportFailureTracking.has(trackingKey)) {
+        transportFailureTracking.delete(trackingKey);
+      }
+    } else if (iceState === 'failed') {
+      console.error(`❌ ${direction} transport ICE failed for ${peer.userName}`);
+      // Don't immediately close - let DTLS handler manage this
+    }
+  });
+
+  transport.on('connectionstatechange', (connectionState) => {
+    console.log(`🔗 ${direction} transport connection: ${connectionState} for ${peer.userName}`);
+    
+    if (connectionState === 'connected') {
+      // Reset failure tracking on successful connection
+      if (transportFailureTracking.has(trackingKey)) {
+        transportFailureTracking.delete(trackingKey);
+      }
+    } else if (connectionState === 'failed') {
+      console.error(`❌ ${direction} transport connection failed for ${peer.userName}`);
+      
+      // Give it time to recover before closing producers
+      setTimeout(() => {
+        if (transport.connectionState === 'failed' && direction === 'send') {
+          console.log(`💔 Transport connection still failed after timeout, closing producers for ${peer.userName}`);
+          
+          const producers = peerProducers.get(socket.id);
+          if (producers) {
+            Object.entries(producers).forEach(async ([kind, producer]) => {
+              if (producer && !producer.closed) {
+                await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+                producer.close();
               }
-            }
+            });
           }
-        });
+        }
+      }, 10000); // Wait 10 seconds before giving up
+    }
+  });
+};
 
-        transport.on('icestatechange', (iceState) => {
-          console.log(`🧊 ${direction} transport ICE: ${iceState} for ${peer.userName}`);
-          if (iceState === 'failed' || iceState === 'disconnected') {
-            console.error(`❌ ${direction} transport ICE failed for ${peer.userName}`);
-          }
-        });
-
-        transport.on('connectionstatechange', (connectionState) => {
-          console.log(`🔗 ${direction} transport connection: ${connectionState} for ${peer.userName}`);
-          if (connectionState === 'failed') {
-            console.error(`❌ ${direction} transport connection failed for ${peer.userName}`);
-            // Trigger cleanup for failed transports
-            if (direction === 'send') {
-              const producers = peerProducers.get(socket.id);
-              if (producers) {
-                Object.entries(producers).forEach(async ([kind, producer]) => {
-                  if (producer && !producer.closed) {
-                    await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
-                    producer.close();
-                  }
-                });
-              }
-            }
-          }
-        });
-      };
-
-      setupTransportHandlers(sendTransport, 'Send');
-      setupTransportHandlers(recvTransport, 'Recv');
+setupTransportHandlers(sendTransport, 'Send');
+setupTransportHandlers(recvTransport, 'Recv');
 
       peerTransports.set(socket.id, {
         sendTransport,
@@ -656,90 +722,112 @@ const setupVideoCallHandlers = (socket, io) => {
 
   // Enhanced start producing with better lifecycle management
   socket.on('start_producing', async (data) => {
-    try {
-      const { kind, rtpParameters } = data;
-      const peer = videoPeers.get(socket.id);
-      const transports = peerTransports.get(socket.id);
+  try {
+    const { kind, rtpParameters } = data;
+    const peer = videoPeers.get(socket.id);
+    const transports = peerTransports.get(socket.id);
 
-      if (!peer || !transports) {
-        return sendError('Peer or transport not found');
+    if (!peer || !transports) {
+      return sendError('Peer or transport not found');
+    }
+
+    // Validate transport is ready before creating producer
+    const sendTransport = transports.sendTransport;
+    if (!sendTransport || sendTransport.closed) {
+      console.error(`❌ Send transport not available for ${peer.userName}`);
+      return sendError('Send transport not available');
+    }
+
+    // Check transport state before proceeding
+    if (sendTransport.connectionState !== 'connected' && sendTransport.dtlsState !== 'connected') {
+      console.warn(`⚠️ Transport not fully connected for ${peer.userName}, state: ${sendTransport.connectionState}, DTLS: ${sendTransport.dtlsState}`);
+      
+      // Wait a bit for connection to establish
+      await new Promise(resolve => setTimeout(resolve, 1000));
+      
+      if (sendTransport.connectionState !== 'connected' && sendTransport.dtlsState !== 'connected') {
+        return sendError('Transport not ready for producing');
       }
+    }
 
-      console.log(`🎬 Creating ${kind} producer for ${peer.userName}`);
+    console.log(`🎬 Creating ${kind} producer for ${peer.userName}`);
 
-      const producer = await transports.sendTransport.produce({
-        kind,
-        rtpParameters,
-      });
+    const producer = await sendTransport.produce({
+      kind,
+      rtpParameters,
+    });
 
-      // Enhanced producer event handling
-      producer.on('transportclose', async () => {
-        console.log(`Producer transport closed: ${kind} for ${peer.userName}`);
-        
-        // Notify peers immediately
-        await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
-        
-        // Clean up from storage
-        const userProducers = peerProducers.get(socket.id);
-        if (userProducers && userProducers[kind]) {
-          delete userProducers[kind];
-          if (Object.keys(userProducers).length === 0) {
-            peerProducers.delete(socket.id);
+    // Enhanced producer event handling with less aggressive cleanup
+    producer.on('transportclose', async () => {
+      console.log(`Producer transport closed: ${kind} for ${peer.userName}`);
+      
+      // Don't immediately notify - transport might recover
+      setTimeout(async () => {
+        if (producer.closed) {
+          await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+          
+          // Clean up from storage
+          const userProducers = peerProducers.get(socket.id);
+          if (userProducers && userProducers[kind]) {
+            delete userProducers[kind];
+            if (Object.keys(userProducers).length === 0) {
+              peerProducers.delete(socket.id);
+            }
+          }
+
+          // Clean up health monitoring
+          const healthCheckId = `${socket.id}-${kind}`;
+          if (producerHealthCheck.has(healthCheckId)) {
+            clearInterval(producerHealthCheck.get(healthCheckId));
+            producerHealthCheck.delete(healthCheckId);
           }
         }
+      }, 2000); // Give 2 seconds for potential recovery
+    });
 
-        // Clean up health monitoring
-        const healthCheckId = `${socket.id}-${kind}`;
-        if (producerHealthCheck.has(healthCheckId)) {
-          clearInterval(producerHealthCheck.get(healthCheckId));
-          producerHealthCheck.delete(healthCheckId);
-        }
-      });
-
-      producer.on('trackended', async () => {
-        console.log(`Producer track ended: ${kind} for ${peer.userName}`);
-        
-        // Notify peers
-        await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
-        
-        // Clean up
-        const userProducers = peerProducers.get(socket.id);
-        if (userProducers && userProducers[kind]) {
-          delete userProducers[kind];
-        }
-      });
-
-      // Store the producer
-      if (!peerProducers.has(socket.id)) {
-        peerProducers.set(socket.id, {});
+    producer.on('trackended', async () => {
+      console.log(`Producer track ended: ${kind} for ${peer.userName}`);
+      
+      // Track ended is usually final - clean up immediately
+      await notifyPeersOfProducerChange(socket.id, peer.classId, producer, 'closed', io);
+      
+      const userProducers = peerProducers.get(socket.id);
+      if (userProducers && userProducers[kind]) {
+        delete userProducers[kind];
       }
-      const producers = peerProducers.get(socket.id);
-      producers[kind] = producer;
+    });
 
-      console.log(`✅ Producer created: ${kind} for ${peer.userName} - ID: ${producer.id}`);
-
-      // Send success response first
-      socket.emit('producer_created', {
-        kind,
-        producerId: producer.id,
-        success: true
-      });
-
-      // Then inform other peers with validation
-      setTimeout(async () => {
-        if (!producer.closed && transports.sendTransport && !transports.sendTransport.closed) {
-          console.log(`📢 Informing other peers about new ${kind} producer from ${peer.userName}`);
-          await informExistingPeersOfNewProducer(socket.id, peer.classId, producer, io);
-        } else {
-          console.warn(`⚠️ Producer or transport closed before informing peers`);
-        }
-      }, 200); // Slightly increased delay
-
-    } catch (error) {
-      console.error('❌ Error creating producer:', error);
-      sendError(`Failed to create producer: ${error.message}`);
+    // Store the producer
+    if (!peerProducers.has(socket.id)) {
+      peerProducers.set(socket.id, {});
     }
-  });
+    const producers = peerProducers.get(socket.id);
+    producers[kind] = producer;
+
+    console.log(`✅ Producer created: ${kind} for ${peer.userName} - ID: ${producer.id}`);
+
+    // Send success response first
+    socket.emit('producer_created', {
+      kind,
+      producerId: producer.id,
+      success: true
+    });
+
+    // Wait longer before informing peers to ensure producer is stable
+    setTimeout(async () => {
+      if (!producer.closed && sendTransport && !sendTransport.closed) {
+        console.log(`📢 Informing other peers about new ${kind} producer from ${peer.userName}`);
+        await informExistingPeersOfNewProducer(socket.id, peer.classId, producer, io);
+      } else {
+        console.warn(`⚠️ Producer or transport closed before informing peers`);
+      }
+    }, 1000); // Increased delay to 1 second
+
+  } catch (error) {
+    console.error('❌ Error creating producer:', error);
+    sendError(`Failed to create producer: ${error.message}`);
+  }
+});
 
   // Rest of the handlers remain the same but with enhanced error handling...
   // (keeping the existing handlers for brevity but they should also have similar enhancements)
@@ -1065,7 +1153,16 @@ const setupVideoCallHandlers = (socket, io) => {
     await cleanupVideoCallResources(socket.id, io);
   });
 };
-
+setInterval(() => {
+  const now = Date.now();
+  const CLEANUP_THRESHOLD = 5 * 60 * 1000; // 5 minutes
+  
+  for (const [key, tracking] of transportFailureTracking.entries()) {
+    if (now - tracking.lastFailure > CLEANUP_THRESHOLD) {
+      transportFailureTracking.delete(key);
+    }
+  }
+}, 60 * 1000);
 module.exports = {
   initializeMediaSoup,
   getClassRouter,
