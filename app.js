@@ -184,6 +184,7 @@ const userRoutes = require("./routes/userroutes");
 const classRoutes = require('./routes/classroutes');
 const assignmentRoutes = require('./routes/assignmentroutes');
 const meetingRoutes = require('./routes/meetingRoutes');
+const communityRoutes = require('./routes/communityroutes');
 // const turnRoutes = require('./routes/turn')
 // Add this directly in your app.js right after your existing routes
 // Place this BEFORE your existing API endpoints
@@ -255,6 +256,7 @@ app.use("/user", userRoutes);
 app.use('/api/class', classRoutes);
 app.use('/api/assign', assignmentRoutes);
 app.use('/api/meetings', meetingRoutes);
+app.use('/api/community', communityRoutes);
 
 // API endpoints
 app.get('/api/class/:classId/messages', async (req, res) => {

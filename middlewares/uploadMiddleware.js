@@ -36,4 +36,25 @@ const upload = multer({
 
 const uploadAssignmentFiles = upload.array('attachments', 5);
 
-module.exports = { uploadAssignmentFiles };
+const communityStorage = multer.diskStorage({
+  destination: function (req, file, cb) {
+    const uploadPath = path.join(__dirname, '../uploads/community');
+    fs.mkdirSync(uploadPath, { recursive: true });
+    cb(null, uploadPath);
+  },
+  filename: function (req, file, cb) {
+    const ext = path.extname(file.originalname);
+    const filename = `${file.fieldname}-${Date.now()}-${Math.round(Math.random() * 1e9)}${ext}`;
+    cb(null, filename);
+  },
+});
+
+const communityUpload = multer({
+  storage: communityStorage,
+  fileFilter,
+  limits: { fileSize: 10 * 1024 * 1024 },
+});
+
+const uploadCommunityFiles = communityUpload.array('attachments', 4);
+
+module.exports = { uploadAssignmentFiles, uploadCommunityFiles };
