@@ -8,10 +8,6 @@ const isValidObjectId = (id) => {
 
 const AUTHOR_SELECT = 'name email profilePicture role';
 
-// Falls back to the production domain if BASE_URL isn't set in the environment,
-// so attachment links never get saved as broken relative paths.
-const getBaseUrl = () => process.env.BASE_URL || 'https://bhattanisha.me';
-
 const formatPost = (post, userId) => {
   const obj = post.toObject ? post.toObject() : post;
   return {
@@ -49,8 +45,8 @@ exports.createPost = async (req, res) => {
     if (req.files && req.files.length > 0) {
       attachments = req.files.map((file) => ({
         filename: file.originalname,
-        path: `/uploads/community/${file.filename}`,
-        url: `${getBaseUrl()}/uploads/community/${file.filename}`,
+        path: file.key,
+        url: file.location,
         size: file.size,
         mimetype: file.mimetype,
         uploadedAt: new Date()

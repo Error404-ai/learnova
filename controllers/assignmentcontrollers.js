@@ -50,8 +50,8 @@ let attachments = [];
 if (req.files && req.files.length > 0) {
   attachments = req.files.map(file => ({
     filename: file.originalname,
-    path: `/uploads/assignments/${file.filename}`,
-    url: `${process.env.BASE_URL}/uploads/assignments/${file.filename}`,
+    path: file.key,
+    url: file.location,
     size: file.size,
     mimetype: file.mimetype,
     uploadedAt: new Date()
