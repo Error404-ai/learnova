@@ -364,11 +364,15 @@ app.use('*', (req, res) => {
 // Graceful shutdown
 const gracefulShutdown = () => {
   console.log('Shutting down gracefully...');
-  io.close(() => {
-    mongoose.connection.close(() => {
+  io.close(async () => {
+    try {
+      await mongoose.connection.close();
       console.log('Server closed');
       process.exit(0);
-    });
+    } catch (err) {
+      console.error('Error during shutdown:', err);
+      process.exit(1);
+    }
   });
 };
 // Add this to your app.js for debugging

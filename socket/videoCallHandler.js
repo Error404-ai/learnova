@@ -76,6 +76,9 @@ const videoPeers = new Map();
 // Producer health monitoring
 const producerHealthCheck = new Map();
 
+// Transport failure tracking (used for cleanup/backoff logic)
+const transportFailureTracking = new Map();
+
 // Initialize MediaSoup worker
 async function initializeMediaSoup() {
   try {
