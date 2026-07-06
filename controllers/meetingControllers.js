@@ -2,6 +2,7 @@ const Meeting = require('../models/Meeting');
 const Class = require('../models/Class');
 const User = require('../models/User');
 const { v4: uuidv4 } = require('uuid');
+const { ensureRoom, generateLiveKitToken, deleteRoom } = require('../utils/livekit');
 
 // Helper function to convert UTC date to IST string
 const convertToIST = (date) => {
@@ -44,15 +45,6 @@ const formatMeetingWithIST = (meeting) => {
 // Helper function to generate unique meeting room ID
 const generateMeetingRoomId = () => {
   return `room_${uuidv4().replace(/-/g, '').substring(0, 12)}`;
-};
-
-// Helper function to generate meeting access token (for future WebRTC integration)
-const generateMeetingToken = (userId, meetingId, role = 'participant') => {
-  const expiresAt = new Date(Date.now() + 2 * 60 * 60 * 1000); // 2 hours from now
-  return {
-    token: `${userId}_${meetingId}_${Date.now()}`,
-    expires: convertToIST(expiresAt)
-  };
 };
 
 // Create/Schedule a new meeting
@@ -329,9 +321,10 @@ exports.startMeeting = async (req, res) => {
 
     await meeting.save();
 
-    // Generate meeting link and token for host
+    // Generate meeting link, create the LiveKit room, and issue a host token
     const meetingLink = `/meet/lecture/${meetingId}`;
-    const hostToken = generateMeetingToken(userId, meetingId, 'host');
+    await ensureRoom(meeting.roomId, meeting.maxParticipants);
+    const hostToken = await generateLiveKitToken(userId, req.user.name, meeting.roomId, 'host');
 
     // Emit socket event to notify all class members (if socket.io is available)
     if (req.io) {
@@ -351,7 +344,9 @@ exports.startMeeting = async (req, res) => {
       meeting: formatMeetingWithIST(meeting),
       meetingLink,
       roomId: meeting.roomId,
-      hostToken,
+      hostToken: hostToken.token,
+      tokenExpires: hostToken.expires,
+      livekitUrl: hostToken.wsUrl,
       timezone: 'IST (UTC+5:30)'
     });
 
@@ -487,7 +482,7 @@ exports.joinMeeting = async (req, res) => {
     if (existingAttendee) {
       // Return existing session info
       const userRole = meeting.scheduledBy._id.toString() === userId ? 'moderator' : 'participant';
-      const accessToken = generateMeetingToken(userId, meetingId, userRole);
+      const accessToken = await generateLiveKitToken(userId, req.user.name, meeting.roomId, userRole);
 
       return res.status(200).json({
         success: true,
@@ -503,6 +498,7 @@ exports.joinMeeting = async (req, res) => {
         },
         accessToken: accessToken.token,
         tokenExpires: accessToken.expires,
+        livekitUrl: accessToken.wsUrl,
         userRole,
         joinedAt: convertToIST(existingAttendee.joinedAt),
         timezone: 'IST (UTC+5:30)'
@@ -526,9 +522,10 @@ exports.joinMeeting = async (req, res) => {
 
     // Determine user role
     const userRole = meeting.scheduledBy._id.toString() === userId ? 'moderator' : 'participant';
-    
-    // Generate access token for video call
-    const accessToken = generateMeetingToken(userId, meetingId, userRole);
+
+    // Make sure the LiveKit room exists, then generate a signed access token
+    await ensureRoom(meeting.roomId, meeting.maxParticipants);
+    const accessToken = await generateLiveKitToken(userId, req.user.name, meeting.roomId, userRole);
 
     // Emit join notification via socket (if available)
     const io = req.app.get('io');
@@ -559,6 +556,7 @@ exports.joinMeeting = async (req, res) => {
       },
       accessToken: accessToken.token,
       tokenExpires: accessToken.expires,
+      livekitUrl: accessToken.wsUrl,
       userRole,
       activeParticipants: meeting.attendees.filter(att => !att.leftAt).length,
       timezone: 'IST (UTC+5:30)'
@@ -703,6 +701,9 @@ exports.endMeeting = async (req, res) => {
     }
 
     await meeting.save();
+
+    // Force-close the LiveKit room, disconnecting all participants
+    await deleteRoom(meeting.roomId);
 
     // Emit meeting ended notification (if available)
     const io = req.app.get('io');

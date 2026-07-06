@@ -16,6 +16,7 @@
     "express-session": "^1.18.1",
     "helmet": "^8.0.0",
     "jsonwebtoken": "^9.0.2",
+    "livekit-server-sdk": "^2.16.0",
     "mediasoup": "^3.18.0",
     "mongoose": "^8.9.5",
     "multer": "^2.0.2",
