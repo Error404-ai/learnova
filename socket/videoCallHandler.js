@@ -714,7 +714,7 @@ setupTransportHandlers(recvTransport, 'Recv');
 
     } catch (error) {
       console.error(`❌ Error connecting ${data.direction} transport:`, error);
-      socket.emit('transport_connected', {
+      socket.emit('transport_connect_error', {
         transportId: data.transportId,
         direction: data.direction,
         success: false,
