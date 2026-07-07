@@ -402,9 +402,9 @@ exports.togglePin = async (req, res) => {
       return res.status(400).json({ success: false, message: 'Invalid post ID format' });
     }
 
-    if (req.user.role !== 'teacher' && req.user.role !== 'admin') {
-      return res.status(403).json({ success: false, message: 'Only teachers or admins can pin posts' });
-    }
+    // if (req.user.role !== 'teacher' && req.user.role !== 'admin') {
+    //   return res.status(403).json({ success: false, message: 'Only teachers or admins can pin posts' });
+    // }
 
     const post = await CommunityPost.findById(postId);
 

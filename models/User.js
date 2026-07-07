@@ -22,9 +22,9 @@ const userSchema = new mongoose.Schema({
     default: false
   },
 
- role: { 
+role: { 
   type: String, 
-  enum: ['student', 'teacher', 'admin'] 
+  enum: ['student', 'teacher'] 
 },
   
   profilePicture: { type: String, default: "" },

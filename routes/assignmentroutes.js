@@ -1,7 +1,7 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middlewares/authMiddleware');
-const { uploadAssignmentFiles } = require('../middlewares/uploadMiddleware'); 
+const { protect, restrictTo } = require('../middlewares/authMiddleware');
+const { uploadAssignmentFiles } = require('../middlewares/uploadMiddleware');
 const {
   createAssignment,
   getClassAssignments,
@@ -16,43 +16,43 @@ const {
 
 router.use(protect);
 
+// Teacher-only
 router.post(
   '/',
+  restrictTo('teacher'),
   uploadAssignmentFiles,
   (error, req, res, next) => {
     if (error) {
       console.error('File upload error:', error);
-      return res.status(400).json({
-        success: false,
-        message: error.message || 'File upload failed'
-      });
+      return res.status(400).json({ success: false, message: error.message || 'File upload failed' });
     }
     next();
   },
   createAssignment
 );
+router.put('/:assignmentId', restrictTo('teacher'), updateAssignment);
+router.delete('/:assignmentId', restrictTo('teacher'), deleteAssignment);
+router.get('/:assignmentId/submissions', restrictTo('teacher'), getAssignmentSubmissions);
+router.put('/:assignmentId/submissions/:submissionId/grade', restrictTo('teacher'), gradeSubmission);
 
-router.get('/class/:classId', getClassAssignments);
-router.get('/subject/:subject', getAssignmentsBySubject);
-router.put('/:assignmentId', updateAssignment);
-router.delete('/:assignmentId', deleteAssignment);
-router.get('/:assignmentId/stats', getAssignmentStats);
+// Student-only
 router.post(
   '/:assignmentId/submit',
+  restrictTo('student'),
   uploadAssignmentFiles,
   (error, req, res, next) => {
     if (error) {
       console.error('File upload error:', error);
-      return res.status(400).json({
-        success: false,
-        message: error.message || 'File upload failed'
-      });
+      return res.status(400).json({ success: false, message: error.message || 'File upload failed' });
     }
     next();
   },
   submitAssignment
 );
-router.get('/:assignmentId/submissions', getAssignmentSubmissions);
-router.put('/:assignmentId/submissions/:submissionId/grade', gradeSubmission);
+
+// Both
+router.get('/class/:classId', getClassAssignments);
+router.get('/subject/:subject', getAssignmentsBySubject);
+router.get('/:assignmentId/stats', getAssignmentStats);
 
 module.exports = router;

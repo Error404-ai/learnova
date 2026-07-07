@@ -1,7 +1,9 @@
 const express = require('express');
 const router = express.Router();
-const { protect } = require('../middlewares/authMiddleware');
+// const { protect } = require('../middlewares/authMiddleware');
 const { uploadCommunityFiles } = require('../middlewares/uploadMiddleware');
+const { protect, restrictTo } = require('../middlewares/authMiddleware');
+
 const {
   createPost,
   getAllPosts,
@@ -25,7 +27,9 @@ router.put('/posts/:postId', updatePost);
 router.delete('/posts/:postId', deletePost);
 
 router.post('/posts/:postId/like', toggleLike);
-router.post('/posts/:postId/pin', togglePin);
+router.post('/posts/:postId/pin', restrictTo('teacher'), togglePin);
+router.post('/posts/:postId/pin', restrictTo('teacher', 'admin'), togglePin);
+
 
 router.post('/posts/:postId/comments', addComment);
 router.delete('/posts/:postId/comments/:commentId', deleteComment);

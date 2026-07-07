@@ -26,3 +26,14 @@ exports.protect = async (req, res, next) => {
         return res.status(401).json({ error: "No token, not authorized" });
     }
 };
+
+exports.restrictTo = (...roles) => {
+  return (req, res, next) => {
+    if (!req.user || !roles.includes(req.user.role)) {
+      return res.status(403).json({
+        error: `Access denied. This action is restricted to: ${roles.join(', ')}`
+      });
+    }
+    next();
+  };
+};
