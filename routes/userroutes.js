@@ -23,5 +23,7 @@ router.post("/leave-classroom", protect, leaveClassroom);
 router.get("/notifications", protect, getNotifications);
 router.put("/notifications/read", protect, markNotificationRead);
 router.get("/dashboard", protect, getDashboard);
+router.get('/assignments/status-summary', protect, getAssignmentStatusSummary);
+router.get('/attendance/weekly', protect, getWeeklyAttendance);
 
 module.exports = router;

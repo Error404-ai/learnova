@@ -2,7 +2,7 @@ const { AccessToken, RoomServiceClient } = require('livekit-server-sdk');
 
 const LIVEKIT_API_KEY = process.env.LIVEKIT_API_KEY;
 const LIVEKIT_API_SECRET = process.env.LIVEKIT_API_SECRET;
-const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL; // e.g. wss://learnova-xxxx.livekit.cloud
+const LIVEKIT_WS_URL = process.env.LIVEKIT_WS_URL;
 
 if (!LIVEKIT_API_KEY || !LIVEKIT_API_SECRET || !LIVEKIT_WS_URL) {
   console.warn('⚠️  LiveKit env vars missing. Set LIVEKIT_API_KEY, LIVEKIT_API_SECRET, LIVEKIT_WS_URL in .env');
@@ -14,11 +14,6 @@ const roomService = new RoomServiceClient(
   LIVEKIT_API_SECRET
 );
 
-/**
- * Ensure a LiveKit room exists for a given roomId (our Mongo Meeting.roomId).
- * Throws on any failure that ISN'T "room already exists" so callers can react
- * (e.g. avoid marking a meeting 'active' when the room was never created).
- */
 const ensureRoom = async (roomName, maxParticipants = 50) => {
   try {
     await roomService.createRoom({
@@ -28,10 +23,10 @@ const ensureRoom = async (roomName, maxParticipants = 50) => {
     });
   } catch (error) {
     if (/already exists/i.test(error.message || '')) {
-      return; // fine, room already exists
+      return;
     }
     console.error('LiveKit ensureRoom error:', error.message);
-    throw error; // was silently swallowed before — now callers can catch it
+    throw error;
   }
 };
 

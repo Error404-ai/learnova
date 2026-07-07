@@ -1,5 +1,44 @@
 const User = require("../models/User");
+// Add this import at the top of the file if not already there
+const CommunityPost = require('../models/CommunityPost');
 
+exports.getDashboard = async (req, res) => {
+    try {
+        if (!req.user || !req.user.id) {
+            return res.status(400).json({ error: "User ID not found in token" });
+        }
+        const user = await User.findById(req.user.id)
+            .populate('classrooms.classroomId', 'name subject')
+            .select('-password -refreshToken');
+        if (!user) {
+            return res.status(404).json({ error: "User not found" });
+        }
+
+        const unreadNotifications = user.notifications.filter(notif => !notif.isRead).length;
+        const postsCount = await CommunityPost.countDocuments({ author: req.user.id });
+
+        const dashboardData = {
+            user: {
+                name: user.name,
+                email: user.email,
+                role: user.role,
+                profilePicture: user.profilePicture
+            },
+            classrooms: user.classrooms,
+            academicStats: user.academicStats,
+            postsCount,
+            unreadNotifications,
+            recentNotifications: user.notifications
+                .filter(notif => !notif.isRead)
+                .sort((a, b) => b.createdAt - a.createdAt)
+                .slice(0, 5)
+        };
+        res.json(dashboardData);
+    } catch (error) {
+        console.error("Error in getDashboard:", error);
+        res.status(500).json({ error: "Internal server error", details: error.message });
+    }
+};
 
 exports.updateProfile = async (req, res) => {
     try {
