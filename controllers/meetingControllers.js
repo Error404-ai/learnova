@@ -315,16 +315,14 @@ exports.startMeeting = async (req, res) => {
     }
 
     // Update meeting status to active
-    meeting.status = 'active';
-    meeting.startedAt = new Date(); // Store in UTC
-    meeting.startedBy = userId;
-
-    await meeting.save();
-
-    // Generate meeting link, create the LiveKit room, and issue a host token
     const meetingLink = `/meet/lecture/${meetingId}`;
     await ensureRoom(meeting.roomId, meeting.maxParticipants);
     const hostToken = await generateLiveKitToken(userId, req.user.name, meeting.roomId, 'host');
+
+    meeting.status = 'active';
+    meeting.startedAt = new Date();
+    meeting.startedBy = userId;
+    await meeting.save();
 
     // Emit socket event to notify all class members (if socket.io is available)
     if (req.io) {
@@ -507,25 +505,17 @@ exports.joinMeeting = async (req, res) => {
 
     // Add to attendees
     const joinTime = new Date();
-    meeting.attendees.push({
-      userId,
-      joinedAt: joinTime
-    });
+    const userRole = meeting.scheduledBy._id.toString() === userId ? 'moderator' : 'participant';
 
-    // Update meeting status to active if it's the first attendee
+    await ensureRoom(meeting.roomId, meeting.maxParticipants);
+    const accessToken = await generateLiveKitToken(userId, req.user.name, meeting.roomId, userRole);
+
+    meeting.attendees.push({ userId, joinedAt: joinTime });
     if (meeting.status === 'scheduled') {
       meeting.status = 'active';
       meeting.startedAt = joinTime;
     }
-
     await meeting.save();
-
-    // Determine user role
-    const userRole = meeting.scheduledBy._id.toString() === userId ? 'moderator' : 'participant';
-
-    // Make sure the LiveKit room exists, then generate a signed access token
-    await ensureRoom(meeting.roomId, meeting.maxParticipants);
-    const accessToken = await generateLiveKitToken(userId, req.user.name, meeting.roomId, userRole);
 
     // Emit join notification via socket (if available)
     const io = req.app.get('io');
