@@ -395,6 +395,7 @@ app.get('/api/debug/video-status', (req, res) => {
     }))
   });
 });
+app.use('/api/todos', require('./routes/todoroutes'));
 
 process.on('SIGTERM', gracefulShutdown);
 process.on('SIGINT', gracefulShutdown);
