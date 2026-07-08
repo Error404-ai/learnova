@@ -8,7 +8,9 @@ const {
     getNotifications, 
     markNotificationRead,
     getDashboard,
-    updateMessage 
+    updateMessage,
+    getAssignmentStatusSummary,
+    getWeeklyAttendance
 } = require("../controllers/usercontrollers");
 const { protect } = require("../middlewares/authMiddleware");
 

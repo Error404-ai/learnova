@@ -38,8 +38,11 @@ role: {
   teacherId: { type: String, default: "" }, 
 
   // Classroom relationships
+  // FIX: ref was 'Classroom', but the model registered in models/Class.js is
+  // mongoose.model('Class', ...). The mismatch made every
+  // .populate('classrooms.classroomId') call return null silently.
   classrooms: [{
-    classroomId: { type: mongoose.Schema.Types.ObjectId, ref: 'Classroom' },
+    classroomId: { type: mongoose.Schema.Types.ObjectId, ref: 'Class' },
     role: { type: String, enum: ['student', 'teacher'], required: true },
     joinedAt: { type: Date, default: Date.now }
   }],

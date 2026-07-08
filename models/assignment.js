@@ -42,5 +42,9 @@ const assignmentSchema = new mongoose.Schema({
   timestamps: true
 });
 
-
-module.exports = mongoose.model('assignment', assignmentSchema);
+// FIX: was previously registered as lowercase 'assignment', but User.js references
+// { ref: 'Assignment' } (capital A). Mongoose model names are case-sensitive, so
+// that populate() was silently returning null for every assignment. Renamed to
+// match the 'Class' / 'Meeting' / 'CommunityPost' capitalization convention used
+// everywhere else in this codebase.
+module.exports = mongoose.model('Assignment', assignmentSchema);
