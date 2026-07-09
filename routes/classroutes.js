@@ -17,15 +17,14 @@ const {
 
 router.use(protect);
 
-// Teacher-only
-router.post('/', restrictTo('teacher'), createClass);
-router.delete('/:classId', restrictTo('teacher'), deleteClass);
-router.post('/add-coordinator', restrictTo('teacher'), addCoordinator);
-router.post('/remove-coordinator', restrictTo('teacher'), removeCoordinator);
+// Any authenticated user can create/join classes in this flexible flow
+router.post('/', createClass);
+router.delete('/:classId', deleteClass);
+router.post('/add-coordinator', addCoordinator);
+router.post('/remove-coordinator', removeCoordinator);
 
-// Student-only
-router.post('/join-by-code', restrictTo('student'), joinClassByCode);
-router.post('/leave', restrictTo('student'), leaveClass);
+router.post('/join-by-code', joinClassByCode);
+router.post('/leave', leaveClass);
 
 // Both
 router.get('/all', getAllClasses);

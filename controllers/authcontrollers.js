@@ -30,7 +30,7 @@ const storeRefreshToken = async (userId, refreshToken) => {
 
 // Signup API 
 exports.signup = async (req, res) => {
-    const { name, email, password } = req.body;
+    const { name, email, password, role } = req.body;
 
     if (!name || !email || !password) {
         return res.status(400).json({ message: 'Name, email, and password are required' });
@@ -48,7 +48,7 @@ exports.signup = async (req, res) => {
         }
 
         const hashedPassword = await bcrypt.hash(password, 10);
-        const newUser = new User({ name, email: email.toLowerCase(), password: hashedPassword, isVerified: false });
+        const newUser = new User({ name, email: email.toLowerCase(), password: hashedPassword, isVerified: false, role: role || 'student' });
         await newUser.save();
 
         const otp = Math.floor(100000 + Math.random() * 900000).toString();
