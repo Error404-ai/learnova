@@ -35,6 +35,17 @@ exports.createClass = async (req, res) => {
     // Save the class to DB
     await newClass.save();
 
+    // Add the class to the creator's classroom list so the dashboard reflects it
+    await User.findByIdAndUpdate(req.user.id, {
+      $addToSet: {
+        classrooms: {
+          classroomId: newClass._id,
+          role: 'teacher',
+          joinedAt: new Date()
+        }
+      }
+    });
+
     // Populate creator's name and email in response
     await newClass.populate('createdBy', 'name email');
 
@@ -179,6 +190,12 @@ exports.joinClassByCode = async (req, res) => {
     // Add student to class
     classObj.students.push(userId);
     await classObj.save();
+
+    // Also add the class to the user's classroom list for dashboard counts
+    await User.updateOne(
+      { _id: userId, 'classrooms.classroomId': { $ne: classObj._id } },
+      { $push: { classrooms: { classroomId: classObj._id, role: 'student', joinedAt: new Date() } } }
+    );
 
     res.status(200).json({ 
       success: true, 

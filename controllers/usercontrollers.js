@@ -242,7 +242,8 @@ exports.updateProfile = async (req, res) => {
             studentId, 
             teacherId,
             profilePicture,
-            message
+            message,
+            role
         } = req.body;
 
         const user = await User.findById(userId);
@@ -258,6 +259,12 @@ exports.updateProfile = async (req, res) => {
         if (school !== undefined) user.school = school;
         if (studentId !== undefined) user.studentId = studentId;
         if (teacherId !== undefined) user.teacherId = teacherId;
+        if (role !== undefined) {
+            if (!['student', 'teacher'].includes(role)) {
+                return res.status(400).json({ error: 'Invalid role value' });
+            }
+            user.role = role;
+        }
         if (profilePicture !== undefined) user.profilePicture = profilePicture;
         if (message !== undefined) user.message = message;
 
