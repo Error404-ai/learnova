@@ -27,8 +27,8 @@ router.put('/posts/:postId', updatePost);
 router.delete('/posts/:postId', deletePost);
 
 router.post('/posts/:postId/like', toggleLike);
-router.post('/posts/:postId/pin', restrictTo('teacher'), togglePin);
-router.post('/posts/:postId/pin', restrictTo('teacher', 'admin'), togglePin);
+// Any authenticated user can pin/unpin - no fixed teacher/admin role required.
+router.post('/posts/:postId/pin', togglePin);
 
 
 router.post('/posts/:postId/comments', addComment);

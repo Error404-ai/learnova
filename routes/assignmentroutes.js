@@ -16,10 +16,11 @@ const {
 
 router.use(protect);
 
-// Teacher-only
+// Any authenticated user can create assignments in classes they created or
+// coordinate; createAssignment itself checks that (isCreator || isCoordinator).
+// There are no fixed account-level roles - permission is scoped per class.
 router.post(
   '/',
-  restrictTo('teacher'),
   uploadAssignmentFiles,
   (error, req, res, next) => {
     if (error) {
@@ -30,15 +31,15 @@ router.post(
   },
   createAssignment
 );
-router.put('/:assignmentId', restrictTo('teacher'), updateAssignment);
-router.delete('/:assignmentId', restrictTo('teacher'), deleteAssignment);
-router.get('/:assignmentId/submissions', restrictTo('teacher'), getAssignmentSubmissions);
-router.put('/:assignmentId/submissions/:submissionId/grade', restrictTo('teacher'), gradeSubmission);
+router.put('/:assignmentId', updateAssignment);
+router.delete('/:assignmentId', deleteAssignment);
+router.get('/:assignmentId/submissions', getAssignmentSubmissions);
+router.put('/:assignmentId/submissions/:submissionId/grade', gradeSubmission);
 
-// Student-only
+// Any authenticated user enrolled in the class can submit; submitAssignment
+// itself checks classId.students membership.
 router.post(
   '/:assignmentId/submit',
-  restrictTo('student'),
   uploadAssignmentFiles,
   (error, req, res, next) => {
     if (error) {

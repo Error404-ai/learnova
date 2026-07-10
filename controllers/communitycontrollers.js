@@ -34,12 +34,8 @@ exports.createPost = async (req, res) => {
     const allowedCategories = ['Discussion', 'Doubt', 'Resource', 'Announcement', 'Project', 'Achievement'];
     const resolvedCategory = allowedCategories.includes(category) ? category : 'Discussion';
 
-    if (resolvedCategory === 'Announcement' && req.user.role === 'student') {
-      return res.status(403).json({
-        success: false,
-        message: 'Only teachers or admins can post announcements'
-      });
-    }
+    // Any authenticated user can post in any category, including
+    // Announcement - there are no fixed teacher/student account roles here.
 
     let attachments = [];
     if (req.files && req.files.length > 0) {

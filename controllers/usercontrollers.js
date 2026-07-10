@@ -6,11 +6,15 @@ const Meeting = require('../models/Meeting');
 
 // ---------------------------------------------------------------------------
 // GET /api/users/dashboard
+// There are no fixed account-level roles in this app: any user can create
+// classrooms (acting as the "teacher" for that classroom) and join other
+// classrooms (acting as a "student" there). So this returns ONE unified
+// dashboard combining both sides for whichever classrooms the user is
+// actually involved in, instead of branching on a global role field.
+//
 // FIX: this used to be defined twice in this file (the second definition
-// silently overwrote the first, so `postsCount` never actually made it to the
-// frontend). Merged into one function, and added role-specific stats so the
-// student dashboard and teacher dashboard get different numbers back from the
-// same endpoint.
+// silently overwrote the first, so `postsCount` never actually made it to
+// the frontend). Merged into one function.
 // ---------------------------------------------------------------------------
 exports.getDashboard = async (req, res) => {
     try {
@@ -33,7 +37,6 @@ exports.getDashboard = async (req, res) => {
             user: {
                 name: user.name,
                 email: user.email,
-                role: user.role,
                 profilePicture: user.profilePicture
             },
             classrooms: user.classrooms,
@@ -45,36 +48,35 @@ exports.getDashboard = async (req, res) => {
                 .slice(0, 5)
         };
 
-        if (user.role === 'teacher') {
-            const classes = await Class.find({ createdBy: user._id }).select('_id students');
-            const classIds = classes.map(c => c._id);
-            const totalStudents = classes.reduce((sum, c) => sum + c.students.length, 0);
+        // Classes this user created (their "teacher" side)
+        const classesCreated = await Class.find({ createdBy: user._id }).select('_id students');
+        const createdClassIds = classesCreated.map(c => c._id);
+        const totalStudentsTaught = classesCreated.reduce((sum, c) => sum + c.students.length, 0);
+        const assignmentsCreated = await Assignment.countDocuments({ createdBy: user._id });
 
-            const assignmentsCreated = await Assignment.countDocuments({ createdBy: user._id });
+        const createdClassAssignments = await Assignment.find({ classId: { $in: createdClassIds } })
+            .select('submissions');
+        const pendingGrading = createdClassAssignments.reduce(
+            (sum, a) => sum + a.submissions.filter(s => s.status === 'submitted').length,
+            0
+        );
 
-            const assignments = await Assignment.find({ classId: { $in: classIds } })
-                .select('submissions');
-            const pendingGrading = assignments.reduce(
-                (sum, a) => sum + a.submissions.filter(s => s.status === 'submitted').length,
-                0
-            );
+        // Classes this user joined (their "student" side)
+        const joinedClassIds = user.classrooms
+            .filter(c => c.classroomId && c.classroomId._id.toString() !== undefined)
+            .map(c => c.classroomId)
+            .filter(id => !createdClassIds.some(cid => cid.toString() === (id._id ? id._id.toString() : id.toString())));
 
-            return res.json({
-                ...baseData,
-                stats: {
-                    classesTaught: classes.length,
-                    totalStudents,
-                    assignmentsCreated,
-                    pendingGrading
-                }
-            });
-        }
-
-        // student
         return res.json({
             ...baseData,
             stats: {
-                enrolledClasses: user.classrooms.filter(c => c.role === 'student').length,
+                // teaching side
+                classesCreated: classesCreated.length,
+                totalStudentsTaught,
+                assignmentsCreated,
+                pendingGrading,
+                // learning side
+                classesJoined: joinedClassIds.length,
                 totalAssignments: user.academicStats?.totalAssignments || 0,
                 completedAssignments: user.academicStats?.completedAssignments || 0,
                 averageGrade: user.academicStats?.averageGrade || 0
@@ -90,8 +92,10 @@ exports.getDashboard = async (req, res) => {
 // GET /api/users/assignments/status-summary
 // Was declared as a route but never implemented/exported - this is why the
 // AssignmentStatusBarChart request was failing.
-// Returns { pending, overdue, completed } shaped for that chart, computed
-// differently depending on role.
+// Returns { pending, overdue, completed } shaped for that chart, combining
+// both the assignments this user set (in classes they created) and the
+// assignments they need to submit (in classes they joined) - no fixed role
+// branching, since the same user can be on either side of a classroom.
 // ---------------------------------------------------------------------------
 exports.getAssignmentStatusSummary = async (req, res) => {
     try {
@@ -99,23 +103,24 @@ exports.getAssignmentStatusSummary = async (req, res) => {
             return res.status(400).json({ error: "User ID not found in token" });
         }
 
-        const user = await User.findById(req.user.id).select('role classrooms');
+        const user = await User.findById(req.user.id).select('classrooms');
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
 
         const now = new Date();
+        let pending = 0;
+        let overdue = 0;
+        let completed = 0;
 
-        if (user.role === 'teacher') {
-            const classes = await Class.find({ createdBy: user._id }).select('_id');
-            const classIds = classes.map(c => c._id);
-            const assignments = await Assignment.find({ classId: { $in: classIds } });
+        // Classes this user created: submissions awaiting/complete grading
+        const createdClasses = await Class.find({ createdBy: user._id }).select('_id');
+        const createdClassIds = createdClasses.map(c => c._id);
+        const createdClassIdSet = new Set(createdClassIds.map(id => id.toString()));
 
-            let pending = 0;    // submissions awaiting grading
-            let completed = 0;  // graded submissions
-            let overdue = 0;    // assignments past due date, not yet fully graded
-
-            assignments.forEach(a => {
+        if (createdClassIds.length > 0) {
+            const teachingAssignments = await Assignment.find({ classId: { $in: createdClassIds } });
+            teachingAssignments.forEach(a => {
                 a.submissions.forEach(s => {
                     if (s.status === 'submitted') pending += 1;
                     if (s.status === 'graded') completed += 1;
@@ -123,38 +128,34 @@ exports.getAssignmentStatusSummary = async (req, res) => {
                 const hasUngraded = a.submissions.some(s => s.status === 'submitted');
                 if (a.dueDate && a.dueDate < now && hasUngraded) overdue += 1;
             });
-
-            return res.json({ pending, overdue, completed });
         }
 
-        // student: look at classes they belong to, and their own submission
-        // status for each assignment in those classes
-        const classIds = user.classrooms
-            .filter(c => c.role === 'student')
-            .map(c => c.classroomId);
+        // Classes this user joined (excluding ones they also created): their
+        // own submission status for each assignment
+        const joinedClassIds = user.classrooms
+            .map(c => c.classroomId)
+            .filter(id => id && !createdClassIdSet.has(id.toString()));
 
-        const assignments = await Assignment.find({
-            classId: { $in: classIds },
-            status: 'active'
-        });
+        if (joinedClassIds.length > 0) {
+            const learningAssignments = await Assignment.find({
+                classId: { $in: joinedClassIds },
+                status: 'active'
+            });
 
-        let pending = 0;
-        let overdue = 0;
-        let completed = 0;
+            learningAssignments.forEach(a => {
+                const mySubmission = a.submissions.find(
+                    s => s.studentId.toString() === user._id.toString()
+                );
 
-        assignments.forEach(a => {
-            const mySubmission = a.submissions.find(
-                s => s.studentId.toString() === user._id.toString()
-            );
-
-            if (mySubmission) {
-                completed += 1; // submitted or graded both count as "done" from student's side
-            } else if (a.dueDate && a.dueDate < now) {
-                overdue += 1;
-            } else {
-                pending += 1;
-            }
-        });
+                if (mySubmission) {
+                    completed += 1; // submitted or graded both count as "done" from the learner's side
+                } else if (a.dueDate && a.dueDate < now) {
+                    overdue += 1;
+                } else {
+                    pending += 1;
+                }
+            });
+        }
 
         res.json({ pending, overdue, completed });
     } catch (error) {
@@ -167,7 +168,8 @@ exports.getAssignmentStatusSummary = async (req, res) => {
 // GET /api/users/attendance/weekly
 // Was also declared but never implemented. There's no dedicated Attendance
 // model in this codebase, so this derives attendance from Meeting.attendees
-// for the current Mon-Sun week, across classes the user belongs to.
+// for the current Mon-Sun week, across every class the user belongs to -
+// whether they created it or joined it.
 // Returns an array of 7 entries: [{ day: 'Mon', date, attended, minutes }, ...]
 // ---------------------------------------------------------------------------
 exports.getWeeklyAttendance = async (req, res) => {
@@ -176,14 +178,15 @@ exports.getWeeklyAttendance = async (req, res) => {
             return res.status(400).json({ error: "User ID not found in token" });
         }
 
-        const user = await User.findById(req.user.id).select('role classrooms');
+        const user = await User.findById(req.user.id).select('classrooms');
         if (!user) {
             return res.status(404).json({ error: "User not found" });
         }
 
-        const classIds = user.role === 'teacher'
-            ? (await Class.find({ createdBy: user._id }).select('_id')).map(c => c._id)
-            : user.classrooms.map(c => c.classroomId);
+        const createdClassIds = (await Class.find({ createdBy: user._id }).select('_id')).map(c => c._id);
+        const joinedClassIds = user.classrooms.map(c => c.classroomId).filter(Boolean);
+        const classIdSet = new Set([...createdClassIds, ...joinedClassIds].map(id => id.toString()));
+        const classIds = Array.from(classIdSet);
 
         // Monday-Sunday range for the current week
         const now = new Date();
